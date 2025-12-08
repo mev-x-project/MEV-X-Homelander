@@ -24,7 +24,16 @@ Only the Algebra Plugin and its integration interfaces are included in this repo
 
 ## Audit Scope & Functional Requirements
 
-
+### Scope
+```
+contracts/
+├── interfaces/
+│   ├── IProfitDistributor.sol
+│   ├── IMevxRouter.sol
+│   └── IMevxExecutor.sol
+└── ArbitragePlugin.sol
+```
+### Functional Requirements
 For audit purposes, the expected functional requirements of this contract are the following:
 
 
