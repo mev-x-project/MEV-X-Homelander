@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 interface IMevxRouter {
-	function initializePool(bytes32 poolId, uint16 poolType, bytes memory data) external;
+	function initializePoolExternally(bytes32 poolId, uint16 poolType, bytes memory data) external;
 
 	function constructArbitrageRoute(
 		bytes32 poolId,

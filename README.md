@@ -7,7 +7,7 @@ MEV-X Homelander is an on-chain, atomic MEV internalization module for DEXs that
 The full Homelander execution stack consists of four on-chain components:
 
 
-- **Algebra Plugin:** Implements the post-swap hook (`afterSwap`) and serves as the entrypoint for MEV internalization. The plugin inspects the finalized pool state and interacts with the MEV-X execution stack. This repository contains only this component and the interfaces required for external integration.
+- **Plugin:** Implements the post-swap hook (`afterSwap`) and serves as the entrypoint for MEV internalization. The plugin inspects the finalized pool state and interacts with the MEV-X execution stack. This repository contains only this component and the interfaces required for external integration.
 
 
 - **MEV-X Router:** Stores precomputed arbitrage routes for supported pools and performs lightweight validation of whether a profitable opportunity exists. When triggered via `afterSwap`, it returns execution data for the relevant route.
@@ -19,7 +19,7 @@ The full Homelander execution stack consists of four on-chain components:
 - **Profit Distributor:** Handles allocation of extracted value according to the configured distribution model.
 
 
-Only the Algebra Plugin and its integration interfaces are included in this repository, the remaining components operate externally and are not part of this codebase.
+Only the UniswapV4 Plugin and its integration interfaces are included in this repository, the remaining components operate externally and are not part of this codebase.
 
 
 ## Audit Scope & Functional Requirements
@@ -31,7 +31,8 @@ contracts/
 │   ├── IProfitDistributor.sol
 │   ├── IMevxRouter.sol
 │   └── IMevxExecutor.sol
-└── ArbitragePlugin.sol
+├── Constants.sol
+└── HomelanderUniV4Plugin.sol
 ```
 ### Functional Requirements
 For audit purposes, the expected functional requirements of this contract are the following:
@@ -43,6 +44,3 @@ For audit purposes, the expected functional requirements of this contract are th
 
 - **The contract must not revert user swaps.**  
   If no valid internal backrun exists or any internal check fails, the hook must return without affecting the user’s transaction outcome.
-
-
-

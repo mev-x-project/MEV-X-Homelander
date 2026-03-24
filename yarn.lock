@@ -1245,6 +1245,16 @@
     "@uniswap/v3-core" "1.0.0"
     base64-sol "1.0.1"
 
+"@uniswap/v4-core@^1.0.2":
+  version "1.0.2"
+  resolved "https://registry.yarnpkg.com/@uniswap/v4-core/-/v4-core-1.0.2.tgz#5b5701267eea25e84221f7697d971fb4f66169f6"
+  integrity sha512-X15Tm2wWd+USAzEExMbo+g9naA6QN6mPgWm0MzDwRNlOfaNlepfUpSyt9RSrUfEODspwbyWbcLg6t5nwc/e7lg==
+
+"@uniswap/v4-periphery@^1.0.3":
+  version "1.0.3"
+  resolved "https://registry.yarnpkg.com/@uniswap/v4-periphery/-/v4-periphery-1.0.3.tgz#d931bc5d6f29703482ceb43ad1f9ad859293ee12"
+  integrity sha512-JxLL0Djv9XcMvI2PatEnWrCrxuEaYNVhHxstndBOP+aJfh1XLg5ec8SDZ0xyoVfg2ElJTvuKpBgnu90bNValsg==
+
 "@xverseprojects/permit2@^0.0.1":
   version "0.0.1"
   resolved "https://registry.yarnpkg.com/@xverseprojects/permit2/-/permit2-0.0.1.tgz#0a02a20b41a7c0454ab9325776423f190f725c05"

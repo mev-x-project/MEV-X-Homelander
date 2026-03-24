@@ -7,6 +7,7 @@ import "@cryptoalgebra/integral-core/contracts/interfaces/plugin/IAlgebraPlugin.
 import "@cryptoalgebra/integral-core/contracts/libraries/Plugins.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
+import {Constants} from "./Constants.sol";
 import {IMevxExecutor} from "./interfaces/IMevxExecutor.sol";
 import {IMevxRouter} from "./interfaces/IMevxRouter.sol";
 import {IProfitDistributor} from "./interfaces/IProfitDistributor.sol";
@@ -16,7 +17,6 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
 
     uint8 public constant defaultPluginConfig =
         uint8(Plugins.AFTER_INIT_FLAG | Plugins.AFTER_SWAP_FLAG);
-    uint16 private constant ALGEBRA_POOL_TYPE = 2;
 
     bytes32 public configId;
     IProfitDistributor public profitDistributor;
@@ -84,7 +84,7 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
         bytes memory data = abi.encode(sqrtPriceX96);
         bytes32 poolId = bytes32(uint256(uint160(msg.sender)));
         try
-            mevxRouter.initializePool(poolId, ALGEBRA_POOL_TYPE, data)
+            mevxRouter.initializePoolExternally(poolId, Constants.ALGEBRA_INTEGRAL_POOL_TYPE, data)
         {} catch {}
 
         return IAlgebraPlugin.afterInitialize.selector;

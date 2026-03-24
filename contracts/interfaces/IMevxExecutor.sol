@@ -8,4 +8,12 @@ interface IMevxExecutor {
 		uint256 amountIn,
 		address profitRecipient
 	) external;
+	function executeRoute(
+
+		bytes calldata encodedRoute,
+		address[] memory pools,
+		uint256 amountIn,
+        address profitToken,
+		address profitRecipient
+	) external;
 }
