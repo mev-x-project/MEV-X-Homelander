@@ -56,7 +56,6 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 		mevxRouter = IMevxRouter(mevxRouter_);
 		profitDistributor = IProfitDistributor(profitDistributor_);
 
-		// Validate defaultFeePips only when enabled.
 		if (dynamicFee_ & LPFeeLibrary.DYNAMIC_FEE_FLAG != 0) {
 			uint24 defaultFeePips = dynamicFee_ & 0x7FFFFF;
 			require(defaultFeePips <= LPFeeLibrary.MAX_LP_FEE, "Invalid defaultFeePips");
