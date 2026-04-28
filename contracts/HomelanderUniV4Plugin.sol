@@ -190,12 +190,12 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 
 		bytes32 poolId = PoolId.unwrap(key.toId());
 
-		bytes memory runArbitrageCalldata = abi.encodeCall(
+		bytes memory branchData = abi.encodeCall(
 			this.runArbitrage,
 			(poolId, params.zeroForOne, -delta.amount0(), -delta.amount1(), sender)
 		);
 
-		address(this).call{gas: callGasBudget}(runArbitrageCalldata);
+		address(this).call{gas: callGasBudget}(branchData);
 
 		return (BaseHook.afterSwap.selector, 0);
 	}
@@ -203,8 +203,8 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 	function runArbitrage(
 		bytes32 poolId,
 		bool zeroForOne,
-		int128 amount0,
-		int128 amount1,
+		int128 negAmount0,
+		int128 negAmount1,
 		address sender
 	) external {
 		require(msg.sender == address(this), "self only");
@@ -238,8 +238,8 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 			poolId,
 			zeroForOne,
 			arbData,
-			amount0,
-			amount1
+			negAmount0,
+			negAmount1
 		);
 
 		address profitToken;
