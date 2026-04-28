@@ -30,7 +30,7 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 	IMevxRouter public mevxRouter;
 	uint256 public minGasLeft;
 
-	uint256 public constant MAX_MIN_GAS_LEFT = 1_500_000;
+	uint256 public constant MAX_MIN_GAS_LEFT = 2_500_000;
 
 	event ConfigIdSet(bytes32 oldConfigId, bytes32 newConfigId);
 	event ProfitDistributorSet(address oldProfitDistributor, address newProfitDistributor);
