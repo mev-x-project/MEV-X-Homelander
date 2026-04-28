@@ -28,15 +28,19 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 	IProfitDistributor public profitDistributor;
 	IMevxExecutor public mevxExecutor;
 	IMevxRouter public mevxRouter;
+
 	uint256 public minGasLeft;
+	uint256 public callGasBudget;
 
 	uint256 public constant MAX_MIN_GAS_LEFT = 2_500_000;
+	uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
 
 	event ConfigIdSet(bytes32 oldConfigId, bytes32 newConfigId);
 	event ProfitDistributorSet(address oldProfitDistributor, address newProfitDistributor);
 	event MevxExecutorSet(address oldMevxExecutor, address newMevxExecutor);
 	event MevxRouterSet(address oldMevxRouter, address newMevxRouter);
 	event MinGasLeftSet(uint256 oldMinGasLeft, uint256 newMinGasLeft);
+	event CallGasBudgetSet(uint256 oldCallGasBudget, uint256 newCallGasBudget);
 
 	constructor(
 		IPoolManager _poolManager,
@@ -64,6 +68,7 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 		}
 
 		dynamicFee = dynamicFee_;
+		callGasBudget = MAX_CALL_GAS_BUDGET;
 	}
 
 	function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
@@ -122,6 +127,13 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 		emit MinGasLeftSet(oldMinGasLeft, minGasLeft_);
 	}
 
+	function setCallGasBudget(uint256 callGasBudget_) external onlyOwner {
+		require(callGasBudget_ <= MAX_CALL_GAS_BUDGET, "callGasBudget too high");
+		uint256 oldCallGasBudget = callGasBudget;
+		callGasBudget = callGasBudget_;
+		emit CallGasBudgetSet(oldCallGasBudget, callGasBudget_);
+	}
+
 	function renounceOwnership() public view override onlyOwner {
 		revert("Ownership cannot be renounced");
 	}
@@ -158,7 +170,11 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 			key.tickSpacing,
 			address(key.hooks)
 		);
-		try mevxRouter.initializePoolExternally(poolId, Constants.UNISWAP_V4_POOL_TYPE, data) {} catch {}
+		bytes memory initData = abi.encodeCall(
+			IMevxRouter.initializePoolExternally,
+			(poolId, Constants.UNISWAP_V4_POOL_TYPE, data)
+		);
+		address(mevxRouter).call{gas: callGasBudget}(initData);
 
 		return BaseHook.afterInitialize.selector;
 	}
@@ -170,45 +186,60 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 		BalanceDelta delta,
 		bytes calldata
 	) internal override returns (bytes4, int128) {
+		require(gasleft() >= minGasLeft, "Insufficient gas for afterSwap hook");
+
 		bytes32 poolId = PoolId.unwrap(key.toId());
+
+		bytes memory runArbitrageCalldata = abi.encodeCall(
+			this.runArbitrage,
+			(poolId, params.zeroForOne, -delta.amount0(), -delta.amount1(), sender)
+		);
+
+		address(this).call{gas: callGasBudget}(runArbitrageCalldata);
+
+		return (BaseHook.afterSwap.selector, 0);
+	}
+
+	function runArbitrage(
+		bytes32 poolId,
+		bool zeroForOne,
+		int128 amount0,
+		int128 amount1,
+		address sender
+	) external {
+		require(msg.sender == address(this), "self only");
 
 		bytes memory initialArbCheckCallData = abi.encodeWithSelector(
 			IMevxRouter.initialArbCheck.selector,
 			poolId,
-			!params.zeroForOne
+			!zeroForOne
 		);
 
 		(bool successInitialArbCheck, bytes memory returnDataInitialArbCheck) = address(mevxRouter).call(
 			initialArbCheckCallData
 		);
 
-		// Intentionally after initialArbCheck
 		if (sender == address(mevxExecutor)) {
-			return (BaseHook.afterSwap.selector, 0);
+			return;
 		}
-
-		require(gasleft() >= minGasLeft, "Insufficient gas for afterSwap hook");
 
 		if (!successInitialArbCheck || returnDataInitialArbCheck.length != 64) {
-			return (BaseHook.afterSwap.selector, 0);
+			return;
 		}
 
-		bytes16 arbData;
-		bool isArbPossible;
-
-		(isArbPossible, arbData) = abi.decode(returnDataInitialArbCheck, (bool, bytes16));
+		(bool isArbPossible, bytes16 arbData) = abi.decode(returnDataInitialArbCheck, (bool, bytes16));
 
 		if (!isArbPossible) {
-			return (BaseHook.afterSwap.selector, 0);
+			return;
 		}
 
 		bytes memory callData = abi.encodeWithSelector(
 			IMevxRouter.constructArbitrageRoute.selector,
 			poolId,
-			params.zeroForOne,
+			zeroForOne,
 			arbData,
-			-delta.amount0(),
-			-delta.amount1()
+			amount0,
+			amount1
 		);
 
 		address profitToken;
@@ -231,7 +262,5 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 				try profitDistributor_.distributeProfit(configId, profitToken, sender) {} catch {}
 			} catch {}
 		}
-
-		return (BaseHook.afterSwap.selector, 0);
 	}
 }
