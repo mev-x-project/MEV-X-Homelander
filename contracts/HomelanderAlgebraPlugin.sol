@@ -23,6 +23,12 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
     IMevxExecutor public mevxExecutor;
     IMevxRouter public mevxRouter;
 
+    uint256 public minGasLeft;
+    uint256 public callGasBudget;
+
+    uint256 public constant MAX_MIN_GAS_LEFT = 2_500_000;
+    uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
+
     event ConfigIdSet(bytes32 oldConfigId, bytes32 newConfigId);
     event ProfitDistributorSet(
         address oldProfitDistributor,
@@ -30,6 +36,8 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
     );
     event MevxExecutorSet(address oldMevxExecutor, address newMevxExecutor);
     event MevxRouterSet(address oldMevxRouter, address newMevxRouter);
+    event MinGasLeftSet(uint256 oldMinGasLeft, uint256 newMinGasLeft);
+    event CallGasBudgetSet(uint256 oldCallGasBudget, uint256 newCallGasBudget);
 
     constructor(
         address owner_,
@@ -41,6 +49,7 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
         mevxExecutor = IMevxExecutor(mevxExecutor_);
         mevxRouter = IMevxRouter(mevxRouter_);
         profitDistributor = IProfitDistributor(profitDistributor_);
+        callGasBudget = MAX_CALL_GAS_BUDGET;
     }
 
     function setPluginConfigToPool(address pool) external onlyOwner {
@@ -76,6 +85,20 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
         emit MevxRouterSet(oldMevxRouter, address(_mevxRouter));
     }
 
+    function setMinGasLeft(uint256 minGasLeft_) external onlyOwner {
+        require(minGasLeft_ <= MAX_MIN_GAS_LEFT, "minGasLeft too high");
+        uint256 oldMinGasLeft = minGasLeft;
+        minGasLeft = minGasLeft_;
+        emit MinGasLeftSet(oldMinGasLeft, minGasLeft_);
+    }
+
+    function setCallGasBudget(uint256 callGasBudget_) external onlyOwner {
+        require(callGasBudget_ <= MAX_CALL_GAS_BUDGET, "callGasBudget too high");
+        uint256 oldCallGasBudget = callGasBudget;
+        callGasBudget = callGasBudget_;
+        emit CallGasBudgetSet(oldCallGasBudget, callGasBudget_);
+    }
+
     function afterInitialize(
         address,
         uint160 sqrtPriceX96,
@@ -91,7 +114,7 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
     }
 
     function afterSwap(
-        address,
+        address sender,
         address recipient,
         bool zeroToOne,
         int256,
@@ -100,51 +123,84 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
         int256 amount1,
         bytes calldata
     ) external override returns (bytes4) {
+        require(gasleft() >= minGasLeft, "Insufficient gas for afterSwap hook");
+
         bytes32 poolId = bytes32(uint256(uint160(msg.sender)));
+
+        bytes memory branchData = abi.encodeCall(
+            this.runArbitrage,
+            (poolId, zeroToOne, amount0, amount1, sender, recipient)
+        );
+
+        address(this).call{gas: callGasBudget}(branchData);
+
+        return IAlgebraPlugin.afterSwap.selector;
+    }
+
+    function runArbitrage(
+        bytes32 poolId,
+        bool zeroToOne,
+        int256 amount0,
+        int256 amount1,
+        address sender,
+        address recipient
+    ) external {
+        require(msg.sender == address(this), "self only");
+
+
+        bytes memory initialArbCheckCallData = abi.encodeWithSelector(
+            IMevxRouter.initialArbCheck.selector,
+            poolId,
+            !zeroToOne
+        );
+
+        (bool successInitialArbCheck, bytes memory returnDataInitialArbCheck) = address(mevxRouter).call(
+            initialArbCheckCallData
+        );
+
+        if (sender == address(mevxExecutor)) {
+            return;
+        }
+
+        if (!successInitialArbCheck || returnDataInitialArbCheck.length != 64) {
+            return;
+        }
+
+        (bool isArbPossible, bytes16 arbData) = abi.decode(returnDataInitialArbCheck, (bool, bytes16));
+
+        if (!isArbPossible) {
+            return;
+        }
 
         bytes memory callData = abi.encodeWithSelector(
             IMevxRouter.constructArbitrageRoute.selector,
             poolId,
             zeroToOne,
+            arbData,
             amount0,
             amount1
         );
 
-        (bool success, bytes memory returnData) = address(mevxRouter).call(
-            callData
-        );
-
-        bool isArbPossible;
         address profitToken;
         address[] memory pools;
         uint256 amountIn;
         bytes memory encodedRoute;
 
-        if (success && returnData.length > 0) {
-            (isArbPossible, profitToken, pools, amountIn, encodedRoute) = abi
-                .decode(returnData, (bool, address, address[], uint256, bytes));
+        (bool success, bytes memory returnData) = address(mevxRouter).call(callData);
+        if (success && returnData.length >= 224) {
+            (isArbPossible, profitToken, pools, amountIn, encodedRoute) = abi.decode(
+                returnData,
+                (bool, address, address[], uint256, bytes)
+            );
         }
+
+        IProfitDistributor profitDistributor_ = profitDistributor;
 
         if (isArbPossible) {
-            try
-                mevxExecutor.executeRoute(
-                    encodedRoute,
-                    pools,
-                    amountIn,
-                    address(profitDistributor)
-                )
-            {
-                try
-                    profitDistributor.distributeProfit(
-                        configId,
-                        profitToken,
-                        recipient
-                    )
-                {} catch {}
+            try mevxExecutor.executeRoute(encodedRoute, pools, amountIn, profitToken, address(profitDistributor_)) {
+                try profitDistributor_.distributeProfit(configId, profitToken, recipient) {} catch {}
             } catch {}
         }
-
-        return IAlgebraPlugin.afterSwap.selector;
     }
 
     /// @inheritdoc IAlgebraPlugin
