@@ -12,11 +12,11 @@ import {IMevxExecutor} from "./interfaces/IMevxExecutor.sol";
 import {IMevxRouter} from "./interfaces/IMevxRouter.sol";
 import {IProfitDistributor} from "./interfaces/IProfitDistributor.sol";
 
-contract MevxPlugin is IAlgebraPlugin, Ownable {
+contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
     using Plugins for uint8;
 
     uint8 public constant defaultPluginConfig =
-        uint8(Plugins.AFTER_INIT_FLAG | Plugins.AFTER_SWAP_FLAG);
+        uint8(Plugins.AFTER_INIT_FLAG | Plugins.AFTER_SWAP_FLAG | Plugins.BEFORE_SWAP_FLAG | Plugins.DYNAMIC_FEE);
 
     bytes32 public configId;
     IProfitDistributor public profitDistributor;
@@ -106,9 +106,13 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
     ) external override returns (bytes4) {
         bytes memory data = abi.encode(sqrtPriceX96);
         bytes32 poolId = bytes32(uint256(uint160(msg.sender)));
-        try
-            mevxRouter.initializePoolExternally(poolId, Constants.ALGEBRA_INTEGRAL_POOL_TYPE, data)
-        {} catch {}
+
+		bytes memory initData = abi.encodeCall(
+			IMevxRouter.initializePoolExternally,
+			(poolId, Constants.ALGEBRA_INTEGRAL_POOL_TYPE, data)
+		);
+
+        address(mevxRouter).call{gas: callGasBudget}(initData);
 
         return IAlgebraPlugin.afterInitialize.selector;
     }
@@ -123,9 +127,35 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
         int256 amount1,
         bytes calldata
     ) external override returns (bytes4) {
+        _afterSwap(msg.sender, sender, recipient, zeroToOne, amount0, amount1);
+        return IAlgebraPlugin.afterSwap.selector;
+    }
+
+    /// @notice External entry point for protocols that embed their own plugin
+    /// and forward the afterSwap hook to HomelanderPluginAlgebra via a regular external call.
+    /// The caller must pass the pool address explicitly.
+    function afterSwapWithPool(
+        address pool,
+        address sender,
+        address recipient,
+        bool zeroToOne,
+        int256 amount0,
+        int256 amount1
+    ) external {
+        _afterSwap(pool, sender, recipient, zeroToOne, amount0, amount1);
+    }
+
+    function _afterSwap(
+        address pool,
+        address sender,
+        address recipient,
+        bool zeroToOne,
+        int256 amount0,
+        int256 amount1
+    ) internal {
         require(gasleft() >= minGasLeft, "Insufficient gas for afterSwap hook");
 
-        bytes32 poolId = bytes32(uint256(uint160(msg.sender)));
+        bytes32 poolId = bytes32(uint256(uint160(pool)));
 
         bytes memory branchData = abi.encodeCall(
             this.runArbitrage,
@@ -133,8 +163,6 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
         );
 
         address(this).call{gas: callGasBudget}(branchData);
-
-        return IAlgebraPlugin.afterSwap.selector;
     }
 
     function runArbitrage(
@@ -203,6 +231,19 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
         }
     }
 
+	function beforeSwap(
+        address sender,
+        address,
+        bool,
+        int256,
+        uint160,
+        bool,
+        bytes calldata
+    ) external view override returns (bytes4, uint24, uint24) {
+        uint24 overrideFee = sender == address(mevxExecutor) ? 1 : 0;
+        return (IAlgebraPlugin.beforeSwap.selector, overrideFee, 0);
+    }
+
     /// @inheritdoc IAlgebraPlugin
     function handlePluginFee(
         uint256,
@@ -243,19 +284,6 @@ contract MevxPlugin is IAlgebraPlugin, Ownable {
         bytes calldata
     ) external view override returns (bytes4) {
         return IAlgebraPlugin.afterModifyPosition.selector;
-    }
-
-    /// @dev unused
-    function beforeSwap(
-        address,
-        address,
-        bool,
-        int256,
-        uint160,
-        bool,
-        bytes calldata
-    ) external view override returns (bytes4, uint24, uint24) {
-        return (IAlgebraPlugin.beforeSwap.selector, 0, 0);
     }
 
     /// @dev unused
