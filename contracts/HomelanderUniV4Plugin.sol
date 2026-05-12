@@ -186,7 +186,9 @@ contract HomelanderUniV4Plugin is BaseHook, Ownable2Step {
 		BalanceDelta delta,
 		bytes calldata
 	) internal override returns (bytes4, int128) {
-		require(gasleft() >= minGasLeft, "Insufficient gas for afterSwap hook");
+		if (sender != address(mevxExecutor)) {
+			require(gasleft() >= minGasLeft, "Insufficient gas for afterSwap hook");
+		}
 
 		bytes32 poolId = PoolId.unwrap(key.toId());
 
