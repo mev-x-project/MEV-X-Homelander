@@ -21,4 +21,8 @@ interface IMevxRouter {
 			uint256 optimalAmountIn,
 			bytes memory encodedRoute
 		);
+
+	function getMevProtectionFee(
+		uint16 currentFee
+	) external view returns (uint24 pluginFee);
 }

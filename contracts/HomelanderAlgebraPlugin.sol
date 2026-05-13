@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
-import "@cryptoalgebra/integral-core/contracts/interfaces/IAlgebraFactory.sol";
 import "@cryptoalgebra/integral-core/contracts/interfaces/IAlgebraPool.sol";
 import "@cryptoalgebra/integral-core/contracts/interfaces/plugin/IAlgebraPlugin.sol";
 import "@cryptoalgebra/integral-core/contracts/libraries/Plugins.sol";
+import {Constants as AlgebraConstants} from "@cryptoalgebra/integral-core/contracts/libraries/Constants.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {Constants} from "./Constants.sol";
 import {IMevxExecutor} from "./interfaces/IMevxExecutor.sol";
@@ -14,6 +16,7 @@ import {IProfitDistributor} from "./interfaces/IProfitDistributor.sol";
 
 contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
     using Plugins for uint8;
+    using SafeERC20 for IERC20;
 
     uint8 public constant defaultPluginConfig =
         uint8(Plugins.AFTER_INIT_FLAG | Plugins.AFTER_SWAP_FLAG | Plugins.BEFORE_SWAP_FLAG | Plugins.DYNAMIC_FEE);
@@ -22,9 +25,17 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
     IProfitDistributor public profitDistributor;
     IMevxExecutor public mevxExecutor;
     IMevxRouter public mevxRouter;
+    /// The single Algebra pool this plugin is bound to. One plugin instance == one pool.
+    IAlgebraPool public immutable algebraPool;
+
+    mapping(address => bool) public authorizedHandlePluginFeeCallers;
+
+    bool public mevProtectionFeeEnabled;
 
     uint256 public minGasLeft;
     uint256 public callGasBudget;
+
+    uint16 public defaultFee;
 
     uint256 public constant MAX_MIN_GAS_LEFT = 2_500_000;
     uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
@@ -38,22 +49,35 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
     event MevxRouterSet(address oldMevxRouter, address newMevxRouter);
     event MinGasLeftSet(uint256 oldMinGasLeft, uint256 newMinGasLeft);
     event CallGasBudgetSet(uint256 oldCallGasBudget, uint256 newCallGasBudget);
+    event DefaultFeeSet(uint16 oldDefaultFee, uint16 newDefaultFee);
+    event AuthorizedHandlePluginFeeCallerSet(address indexed caller, bool authorized);
+    event MevProtectionFeeEnabledSet(bool oldEnabled, bool newEnabled);
 
     constructor(
         address owner_,
         address mevxRouter_,
         address mevxExecutor_,
-        address profitDistributor_
+        address profitDistributor_,
+        address algebraPool_,
+        uint16 defaultFee_
     ) {
+        require(owner_ != address(0), "owner is zero address");
+        require(mevxRouter_ != address(0), "mevxRouter is zero address");
+        require(mevxExecutor_ != address(0), "mevxExecutor is zero address");
+        require(profitDistributor_ != address(0), "profitDistributor is zero address");
+        require(algebraPool_ != address(0), "algebraPool is zero address");
+        require(defaultFee_ <= AlgebraConstants.MAX_DEFAULT_FEE, "defaultFee too high");
         _transferOwnership(owner_);
         mevxExecutor = IMevxExecutor(mevxExecutor_);
         mevxRouter = IMevxRouter(mevxRouter_);
         profitDistributor = IProfitDistributor(profitDistributor_);
+        algebraPool = IAlgebraPool(algebraPool_);
         callGasBudget = MAX_CALL_GAS_BUDGET;
+        defaultFee = defaultFee_;
     }
 
-    function setPluginConfigToPool(address pool) external onlyOwner {
-        IAlgebraPool(pool).setPluginConfig(defaultPluginConfig);
+    function setPluginConfigToPool() external onlyOwner {
+        algebraPool.setPluginConfig(defaultPluginConfig);
     }
 
     function setConfigId(bytes32 _configId) external onlyOwner {
@@ -99,13 +123,32 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
         emit CallGasBudgetSet(oldCallGasBudget, callGasBudget_);
     }
 
+    function setDefaultFee(uint16 defaultFee_) external onlyOwner {
+        require(defaultFee_ <= AlgebraConstants.MAX_DEFAULT_FEE, "defaultFee too high");
+        uint16 oldDefaultFee = defaultFee;
+        defaultFee = defaultFee_;
+        emit DefaultFeeSet(oldDefaultFee, defaultFee_);
+    }
+
+    function setAuthorizedHandlePluginFeeCaller(address caller, bool authorized) external onlyOwner {
+        require(caller != address(0), "caller is zero address");
+        authorizedHandlePluginFeeCallers[caller] = authorized;
+        emit AuthorizedHandlePluginFeeCallerSet(caller, authorized);
+    }
+
+    function setMevProtectionFeeEnabled(bool enabled) external onlyOwner {
+        bool oldEnabled = mevProtectionFeeEnabled;
+        mevProtectionFeeEnabled = enabled;
+        emit MevProtectionFeeEnabledSet(oldEnabled, enabled);
+    }
+
     function afterInitialize(
         address,
         uint160 sqrtPriceX96,
         int24
     ) external override returns (bytes4) {
         bytes memory data = abi.encode(sqrtPriceX96);
-        bytes32 poolId = bytes32(uint256(uint160(msg.sender)));
+        bytes32 poolId = bytes32(uint256(uint160(address(algebraPool))));
 
 		bytes memory initData = abi.encodeCall(
 			IMevxRouter.initializePoolExternally,
@@ -127,22 +170,8 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
         int256 amount1,
         bytes calldata
     ) external override returns (bytes4) {
-        _afterSwap(msg.sender, sender, recipient, zeroToOne, amount0, amount1);
+        _afterSwap(address(algebraPool), sender, recipient, zeroToOne, amount0, amount1);
         return IAlgebraPlugin.afterSwap.selector;
-    }
-
-    /// @notice External entry point for protocols that embed their own plugin
-    /// and forward the afterSwap hook to HomelanderPluginAlgebra via a regular external call.
-    /// The caller must pass the pool address explicitly.
-    function afterSwapWithPool(
-        address pool,
-        address sender,
-        address recipient,
-        bool zeroToOne,
-        int256 amount0,
-        int256 amount1
-    ) external {
-        _afterSwap(pool, sender, recipient, zeroToOne, amount0, amount1);
     }
 
     function _afterSwap(
@@ -242,15 +271,53 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
         bool,
         bytes calldata
     ) external view override returns (bytes4, uint24, uint24) {
-        uint24 overrideFee = sender == address(mevxExecutor) ? 1 : 0;
-        return (IAlgebraPlugin.beforeSwap.selector, overrideFee, 0);
+        if (sender == address(mevxExecutor)) {
+            return (IAlgebraPlugin.beforeSwap.selector, 1, 0);
+        }
+        if (!mevProtectionFeeEnabled) {
+            return (IAlgebraPlugin.beforeSwap.selector, 0, 0);
+        }
+        uint16 currentFee = defaultFee;
+
+        bytes memory callData = abi.encodeWithSelector(
+            IMevxRouter.getMevProtectionFee.selector,
+            currentFee
+        );
+
+        (bool success, bytes memory returnData) = address(mevxRouter).staticcall{gas: callGasBudget}(callData);
+        uint24 pluginFee = 0;
+
+        if (success && returnData.length == 32) {
+            pluginFee = abi.decode(returnData, (uint24));
+            if (pluginFee > AlgebraConstants.MAX_DEFAULT_FEE) {
+                pluginFee = 0;
+            }
+        }
+
+        return (IAlgebraPlugin.beforeSwap.selector, currentFee, pluginFee);
     }
 
     /// @inheritdoc IAlgebraPlugin
     function handlePluginFee(
-        uint256,
-        uint256
-    ) external view override returns (bytes4) {
+        uint256 pluginFee0,
+        uint256 pluginFee1
+    ) external override returns (bytes4) {
+        require(
+            msg.sender == address(algebraPool) || authorizedHandlePluginFeeCallers[msg.sender],
+            "not authorized"
+        );
+        address token0 = algebraPool.token0();
+        address token1 = algebraPool.token1();
+
+        address recipient = address(profitDistributor);
+        if (pluginFee0 > 0) {
+            IERC20(token0).safeTransfer(recipient, pluginFee0);
+            try profitDistributor.distributeProfit(configId, token0, address(0)) {} catch {}
+        }
+        if (pluginFee1 > 0) {
+            IERC20(token1).safeTransfer(recipient, pluginFee1);
+            try profitDistributor.distributeProfit(configId, token1, address(0)) {} catch {}
+        }
         return IAlgebraPlugin.handlePluginFee.selector;
     }
 
