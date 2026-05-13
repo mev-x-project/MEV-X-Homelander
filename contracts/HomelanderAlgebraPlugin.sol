@@ -153,7 +153,9 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
         int256 amount0,
         int256 amount1
     ) internal {
-        require(gasleft() >= minGasLeft, "Insufficient gas for afterSwap hook");
+        if (sender != address(mevxExecutor)) {
+            require(gasleft() >= minGasLeft, "Insufficient gas for afterSwap hook");
+        }
 
         bytes32 poolId = bytes32(uint256(uint160(pool)));
 
