@@ -262,6 +262,33 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
         }
     }
 
+    /// @notice Returns the indicative pool fee as `defaultFee + pluginFee`, exposed for
+    /// Algebra's dynamic-fee view path (`AlgebraPool.fee()`) and for off-chain quoting.
+    /// @dev The value returned here may differ from the fee actually charged by a swap.
+    /// Consider calling it atomically right before the swap if a
+    /// precise figure is required.
+    function getCurrentFee() external view returns (uint16) {
+        uint16 currentFee = defaultFee;
+
+        bytes memory callData = abi.encodeWithSelector(
+            IMevxRouter.getMevProtectionFee.selector,
+            currentFee
+        );
+
+        (bool success, bytes memory returnData) = address(mevxRouter)
+            .staticcall{gas: callGasBudget}(callData);
+        uint24 pluginFee = 0;
+
+        if (success && returnData.length == 32) {
+            pluginFee = abi.decode(returnData, (uint24));
+            if (pluginFee > AlgebraConstants.MAX_DEFAULT_FEE) {
+                pluginFee = 0;
+            }
+        }
+
+        return uint16(currentFee + pluginFee);
+    }
+
 	function beforeSwap(
         address sender,
         address,
