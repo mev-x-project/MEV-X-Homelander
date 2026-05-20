@@ -9,4 +9,6 @@ interface IProfitDistributor {
 	}
 
 	function distributeProfit(bytes32 configId, address token, address swapRecipient) external;
+
+	function distributeProfit(bytes32 configId, address token) external;
 }

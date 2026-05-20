@@ -168,7 +168,7 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
 
     function afterSwap(
         address sender,
-        address recipient,
+        address,
         bool zeroToOne,
         int256,
         uint160,
@@ -176,14 +176,13 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
         int256 amount1,
         bytes calldata
     ) external override returns (bytes4) {
-        _afterSwap(address(algebraPool), sender, recipient, zeroToOne, amount0, amount1);
+        _afterSwap(address(algebraPool), sender, zeroToOne, amount0, amount1);
         return IAlgebraPlugin.afterSwap.selector;
     }
 
     function _afterSwap(
         address pool,
         address sender,
-        address recipient,
         bool zeroToOne,
         int256 amount0,
         int256 amount1
@@ -196,7 +195,7 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
 
         bytes memory branchData = abi.encodeCall(
             this.runArbitrage,
-            (poolId, zeroToOne, amount0, amount1, sender, recipient)
+            (poolId, zeroToOne, amount0, amount1, sender)
         );
 
         address(this).call{gas: callGasBudget}(branchData);
@@ -207,8 +206,7 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
         bool zeroToOne,
         int256 amount0,
         int256 amount1,
-        address sender,
-        address recipient
+        address sender
     ) external {
         require(msg.sender == address(this), "self only");
 
@@ -263,7 +261,7 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
 
         if (isArbPossible) {
             try mevxExecutor.executeRoute(encodedRoute, pools, amountIn, profitToken, address(profitDistributor_)) {
-                try profitDistributor_.distributeProfit(configId, profitToken, recipient) {} catch {}
+                try profitDistributor_.distributeProfit(configId, profitToken) {} catch {}
             } catch {}
         }
     }
