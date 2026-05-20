@@ -89,6 +89,8 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
     function setProfitDistributor(
         IProfitDistributor _profitDistributor
     ) external onlyOwner {
+        require(address(_profitDistributor) != address(0), "profitDistributor is zero address");
+
         address oldProfitDistributor = address(profitDistributor);
         profitDistributor = _profitDistributor;
         emit ProfitDistributorSet(
@@ -98,12 +100,16 @@ contract HomelanderAlgebraPlugin is IAlgebraPlugin, Ownable {
     }
 
     function setMevxExecutor(IMevxExecutor _mevxExecutor) external onlyOwner {
+        require(address(_mevxExecutor) != address(0), "mevxExecutor is zero address");
+
         address oldMevxExecutor = address(mevxExecutor);
         mevxExecutor = _mevxExecutor;
         emit MevxExecutorSet(oldMevxExecutor, address(_mevxExecutor));
     }
 
     function setMevxRouter(IMevxRouter _mevxRouter) external onlyOwner {
+        require(address(_mevxRouter) != address(0), "mevxRouter is zero address");
+
         address oldMevxRouter = address(mevxRouter);
         mevxRouter = _mevxRouter;
         emit MevxRouterSet(oldMevxRouter, address(_mevxRouter));
