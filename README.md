@@ -25,3 +25,24 @@ The full Homelander execution stack consists of four on-chain components:
 - **MEV-X Executor:** Executes the internal arbitrage using the route data provided by the MEV-X Router. All swaps are performed atomically within the originating transaction.
 
 - **Profit Distributor:** Handles allocation of extracted value according to the configured distribution model.
+
+## Uniswap V4 Singleton Hook
+
+`contracts/singleton_hook/HomelanderUniV4SingletonHook.sol` is a single, non-upgradeable Uniswap V4 hook that serves every pool created with it. It is deployed by `SingletonHookFactory` (through CreateX) at the same address on every chain:
+
+| Contract | Address |
+| --- | --- |
+| `HomelanderUniV4SingletonHook` | `0x4F0067581931d9205E848862a7042b5EBc11f0c0` |
+| `SingletonHookFactory` | `0xB972d7effAe885202C0DE695108fd659fe0C7f40` |
+
+Chains: Ethereum, Base, BNB Chain, Robinhood.
+
+Hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap`. No return-delta permissions, so the hook never takes or adds tokens to a swap.
+
+- **Pools:** dynamic-fee pools only (`fee = 0x800000`). On `afterInitialize` the hook stores the pool's config (static fee by tick spacing or the default, call gas budget, hard mode, LP share) and registers the pool with the MEV-X Router.
+- **Fees (`beforeSwap`):** per-pool static fee, optional per-account fee overrides, and an optional dynamic fee bounded by per-pool min/max. Swaps made by the MEV-X Executor pay no fee.
+- **Backrun (`afterSwap`):** runs the arbitrage in a gas-capped self-call that never reverts the user's swap. In hard mode only, the swap reverts when the backrun ran out of gas because the transaction did not provide enough.
+- **Profit:** the backrun profit is split between the pool's LPs (donated to the pool, per-pool share) and the Profit Distributor.
+- **Roles:** OpenZeppelin `AccessControlDefaultAdminRules`; per-pool fee manager and pool admin roles.
+
+Compiler: solc 0.8.26, `viaIR`, optimizer 1 run, EVM `cancun` (as in `hardhat.config.ts`). The compiled bytecode matches the deployed contracts.

@@ -13,4 +13,5 @@ library Constants {
 	uint16 internal constant FLUID_LITE_POOL_TYPE = 7;
 	uint16 internal constant DODO_V2_POOL_TYPE = 8;
 	uint16 internal constant WOO_POOL_TYPE = 9;
+	uint16 internal constant PANCAKE_INFINITY_CL_POOL_TYPE = 10;
 }
