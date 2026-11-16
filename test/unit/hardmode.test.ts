@@ -1,4 +1,4 @@
-import {network} from 'hardhat';
+import {ethers, network} from 'hardhat';
 import {expect} from 'chai';
 import {loadFixture} from '@nomicfoundation/hardhat-network-helpers';
 import {DEXES} from '../shared/dexes';
@@ -80,6 +80,25 @@ for (const dex of DEXES) {
 			const {pool, base} = await prepare(s, {hard: true, executor: ExecutorMode.BurnGas});
 			await (await s.hook.setOutOfGasDepth(pool.poolId, 0)).wait();
 			expect(await outcome(s, pool, base, 0.6)).to.equal('noBackrun');
+		});
+		it('BackrunFailed reports an out of gas the transaction caused, in soft mode where the swap goes through', async () => {
+			const s = await setup();
+			const {pool, base} = await prepare(s, {hard: false, executor: ExecutorMode.BurnGas});
+			const short = await swap(s, pool, true, {amount: AMOUNT, gasLimit: Math.floor(base + BUDGET * 0.6)});
+			const [e] = events(s.hook, short, 'BackrunFailed');
+			expect([e.args.poolId, e.args.outOfGas]).to.deep.equal([pool.poolId, true]);
+			const enough = await swap(s, pool, true, {amount: AMOUNT, gasLimit: Math.floor(base + BUDGET * 1.5)});
+			expect(events(s.hook, enough, 'BackrunFailed').map((x) => x.args.outOfGas)).to.deep.equal([false]);
+		});
+
+		it('a reverting backrun is reported as reverted', async () => {
+			const s = await setup();
+			const {pool} = await prepare(s, {hard: true});
+			// native profit to a distributor that rejects native currency: runArbitrage reverts on "native transfer failed"
+			await armArbitrage(s, pool, true, {profitToken: ethers.ZeroAddress});
+			await (await s.hook.setProfitDistributor(s.token0.target)).wait();
+			const r = await swap(s, pool, true, {amount: AMOUNT});
+			expect(events(s.hook, r, 'BackrunFailed').map((e) => [...e.args])).to.deep.equal([[pool.poolId, true, false]]);
 		});
 	});
 }

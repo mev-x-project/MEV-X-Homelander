@@ -80,6 +80,7 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 	event PoolCallGasBudgetSet(bytes32 indexed poolId, uint32 callGasBudget);
 	event PoolOutOfGasDepthSet(bytes32 indexed poolId, uint8 depth);
 	event ProfitShared(bytes32 indexed poolId, address profitToken, uint256 donatedToLps, uint256 sentToDistributor);
+	event BackrunFailed(bytes32 indexed poolId, bool reverted, bool outOfGas);
 
 	struct Parameters {
 		ICLPoolManager poolManager;
@@ -396,13 +397,13 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 		);
 		uint256 gasAfter = gasleft();
 
-		// hard mode: the arbitrage failed, the swap left it less than its budget and it burned its gas
-		// (an out of gas up to outOfGasDepth calls deep hands back at most (1 + depth)/64)
-		if (c.hardMode && (!success || abi.decode(ret, (bool)))) {
+		if (!success || abi.decode(ret, (bool))) {
+			// the swap left the arbitrage less than its budget and it burned its gas
+			// (an out of gas up to outOfGasDepth calls deep hands back at most (1 + depth)/64)
 			bool shortOfBudget = gasBefore - gasBefore / 64 < c.callGasBudget;
-			if (shortOfBudget && gasAfter * 64 <= gasBefore * (1 + uint256(c.outOfGasDepth))) {
-				revert("Insufficient gas for afterSwap hook");
-			}
+			bool outOfGas = shortOfBudget && gasAfter * 64 <= gasBefore * (1 + uint256(c.outOfGasDepth));
+			if (c.hardMode && outOfGas) revert("Insufficient gas for afterSwap hook");
+			emit BackrunFailed(poolId, !success, outOfGas);
 		}
 
 		return (this.afterSwap.selector, 0);

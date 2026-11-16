@@ -33,6 +33,7 @@ for (const dex of DEXES) {
 			const shared = events(s.hook, r, 'ProfitShared');
 			expect(shared.length).to.equal(1);
 			expect(shared[0].args).to.deep.equal([pool.poolId, token, PROFIT / 2n, PROFIT / 2n]);
+			expect(events(s.hook, r, 'BackrunFailed').length).to.equal(0);
 			const donations = events(s.manager, r, 'Donate');
 			expect(donations.length).to.equal(1);
 			expect([donations[0].args.sender, donations[0].args.amount0, donations[0].args.amount1]).to.deep.equal([s.hook.target, PROFIT / 2n, 0n]);
@@ -157,6 +158,7 @@ for (const dex of DEXES) {
 			expect(await s.mevxRouter.constructCalls()).to.equal(0n);
 			expect(events(s.manager, r, 'Swap').length).to.equal(1);
 			expect(events(s.hook, r, 'ProfitShared').length).to.equal(0);
+			expect(events(s.hook, r, 'BackrunFailed').length).to.equal(0);
 		});
 
 		it('the router finds no route', async () => {
@@ -168,20 +170,23 @@ for (const dex of DEXES) {
 			expect(events(s.hook, r, 'ProfitShared').length).to.equal(0);
 		});
 
-		for (const [what, modes] of [
-			['initialArbCheck reverts', [RouterMode.Normal, RouterMode.Revert, RouterMode.Normal]],
-			['initialArbCheck burns its gas', [RouterMode.Normal, RouterMode.BurnGas, RouterMode.Normal]],
-			['constructArbitrageRoute reverts', [RouterMode.Normal, RouterMode.Normal, RouterMode.Revert]],
-			['constructArbitrageRoute burns its gas', [RouterMode.Normal, RouterMode.Normal, RouterMode.BurnGas]],
+		// initialArbCheck failing counts as "no arbitrage"; a failure once an arbitrage was found is reported
+		for (const [what, modes, reported] of [
+			['initialArbCheck reverts', [RouterMode.Normal, RouterMode.Revert, RouterMode.Normal], false],
+			['initialArbCheck burns its gas', [RouterMode.Normal, RouterMode.BurnGas, RouterMode.Normal], false],
+			['constructArbitrageRoute reverts', [RouterMode.Normal, RouterMode.Normal, RouterMode.Revert], true],
+			['constructArbitrageRoute burns its gas', [RouterMode.Normal, RouterMode.Normal, RouterMode.BurnGas], true],
 		] as const)
 			it(`the router fails: ${what}`, async () => {
 				const s = await setup();
-				const {r} = await userSwapWith(s, async (pool) => {
+				const {pool, r} = await userSwapWith(s, async (pool) => {
 					await (await s.mevxRouter.setModes(...modes)).wait();
 					await (await s.hook.setCallGasBudget(pool.poolId, 1_000_000)).wait();
 				});
 				expect(events(s.manager, r, 'Swap').length).to.equal(1);
 				expect(events(s.hook, r, 'ProfitShared').length).to.equal(0);
+				const failed = events(s.hook, r, 'BackrunFailed');
+				expect(failed.map((e) => [...e.args])).to.deep.equal(reported ? [[pool.poolId, false, false]] : []);
 			});
 
 		for (const [what, mode] of [
@@ -191,12 +196,13 @@ for (const dex of DEXES) {
 		] as const)
 			it(`the executor ${what}`, async () => {
 				const s = await setup();
-				const {r} = await userSwapWith(s, async (pool) => {
+				const {pool, r} = await userSwapWith(s, async (pool) => {
 					await armArbitrage(s, pool, true, {profit: PROFIT, mode});
 					await (await s.hook.setCallGasBudget(pool.poolId, 1_000_000)).wait();
 				});
 				expect(events(s.manager, r, 'Swap').length).to.equal(1);
 				expect(events(s.hook, r, 'ProfitShared').length).to.equal(0);
+				expect(events(s.hook, r, 'BackrunFailed').map((e) => [...e.args])).to.deep.equal([[pool.poolId, false, false]]);
 				expect(await balanceOf(await s.token0.getAddress(), s.hook.target as string)).to.equal(0n);
 			});
 

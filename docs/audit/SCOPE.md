@@ -94,6 +94,7 @@ BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork against the live 
    6. The rest is transferred, or sent as native currency, to the distributor, and `distributeProfit(poolId, token, sender)` is called inside try/catch.
    7. The hook emits `ProfitShared(poolId, token, donatedToLps, sentToDistributor)`.
    8. `runArbitrage` returns `failed`. It is true when the router or executor failed after an arbitrage was found.
+   9. If `runArbitrage` reverted or returned `failed`, the hook emits `BackrunFailed(poolId, reverted, outOfGas)` outside the self-call, unless hard mode reverts the swap (next step). `outOfGas` is the hard-mode condition: the transaction left the backrun short of its budget and the backrun ran out of gas. In soft mode it marks the swaps that went through without a backrun because of the transaction's gas limit.
 6. **Hard mode** (per pool, off by default). The swap reverts with `Insufficient gas for afterSwap hook` only when all three conditions hold:
    - the backrun failed;
    - the gas available to it was less than `callGasBudget`, so the transaction did not provide enough gas;
