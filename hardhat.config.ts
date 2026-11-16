@@ -1,22 +1,18 @@
 import 'dotenv/config';
-import { HardhatUserConfig } from 'hardhat/types';
-import 'hardhat-deploy';
+import {HardhatUserConfig, subtask} from 'hardhat/config';
+import {TASK_COMPILE_SOLIDITY_READ_FILE} from 'hardhat/builtin-tasks/task-names';
 import '@nomicfoundation/hardhat-ethers';
-import '@nomicfoundation/hardhat-verify';
-import "@nomicfoundation/hardhat-chai-matchers"
-import 'hardhat-deploy-ethers';
-import 'hardhat-gas-reporter';
+import '@nomicfoundation/hardhat-chai-matchers';
 import '@typechain/hardhat';
 import 'solidity-coverage';
-import 'hardhat-deploy-tenderly';
-import 'hardhat-contract-sizer';
-import 'hardhat-tracer'
 
-import { addForkConfiguration } from './helper-tools/utils/network';
-import { defaultNetworks } from './networks.config';
-import { task } from 'hardhat/config';
-
-const OPTIMIZER_RUNS = 1;
+// PancakeSwap Infinity's Vault (compiled only for the local test stack) is written against OpenZeppelin 5, the hooks
+// against OpenZeppelin 4.9: infinity-core sources read OpenZeppelin from the v5 alias
+subtask(TASK_COMPILE_SOLIDITY_READ_FILE).setAction(async (args: {absolutePath: string}, _hre, runSuper) => {
+	const content: string = await runSuper(args);
+	if (!args.absolutePath.includes('/node_modules/infinity-core/')) return content;
+	return content.replace(/"@openzeppelin\/contracts\//g, '"@openzeppelin/contracts-v5/');
+});
 
 const config: HardhatUserConfig = {
 	solidity: {
@@ -26,81 +22,19 @@ const config: HardhatUserConfig = {
 				settings: {
 					viaIR: true,
 					evmVersion: 'cancun',
-					optimizer: {
-						enabled: true,
-						runs: OPTIMIZER_RUNS,
-					},
+					optimizer: {enabled: true, runs: 1},
 				},
 			},
 		],
 	},
-	networks: addForkConfiguration(defaultNetworks),
-	gasReporter: {
-		currency: 'USD',
-		gasPrice: 100,
-		enabled: process.env.REPORT_GAS ? true : false,
-		coinmarketcap: process.env.COINMARKETCAP_API_KEY,
-		maxMethodDiff: 10,
+	networks: {
+		hardhat: {
+			hardfork: 'cancun',
+			allowUnlimitedContractSize: true,
+		},
 	},
-	tracer: {
-		tasks: ["deploy"],
-	},
-	typechain: {
-		outDir: 'typechain',
-	},
-	mocha: {
-		timeout: 200000000000000,
-	},
-	external: process.env.HARDHAT_FORK
-		? {
-			deployments: {
-				// process.env.HARDHAT_FORK will specify the network that the fork is made from.
-				// these lines allow it to fetch the deployments from the network being forked from both for node and deploy task
-				hardhat: ['deployments/' + process.env.HARDHAT_FORK],
-				localhost: ['deployments/' + process.env.HARDHAT_FORK],
-			},
-		}
-		: undefined,
+	typechain: {outDir: 'typechain', target: 'ethers-v6'},
+	mocha: {timeout: 600_000},
 };
-task("deployments", "List all deployed contract addresses")
-	.setAction(async (_, hre) => {
-		const deployments = await hre.deployments.all()
-		for (const contractName in deployments) {
-			console.log(`${contractName} \`${deployments[contractName].address}\``)
-		}
-	})
-
-task("verify-etherscan", "Verify all deployments using etherscan-verify")
-	.addOptionalParam("pattern", "Filter deployments to only those which name includes {{pattern}}")
-	.addOptionalParam("contract", "The name of contract that should be verified")
-	.setAction(async (taskArgs, hre) => {
-		const deployments = await hre.deployments.all()
-		for (const deploymentName in deployments) {
-			if (taskArgs.pattern && !deploymentName.includes(taskArgs.pattern)) continue
-
-			const metadataString = deployments[deploymentName].metadata
-			if (metadataString === undefined) continue
-			const metadata = JSON.parse(metadataString)
-			const [path, contractName]: any = Object.entries(metadata.settings.compilationTarget)[0]
-			if (contractName === "AggregationExecutorSimple") continue
-			if (taskArgs.contract && contractName != taskArgs.contract) continue
-			console.log('\x1b[33m%s\x1b[0m', `Verifying ${deploymentName} at address: ${deployments[deploymentName].address}`);
-
-			try {
-				await hre.run("verify:verify", {
-					contract: `${path}:${contractName}`,
-					address: deployments[deploymentName].address,
-					constructorArguments: deployments[deploymentName].args,
-					chain_id: 137,
-					libs: {
-					}
-				});
-			} catch (error) {
-				console.error(error)
-			} finally {
-				console.log()
-			}
-		}
-	})
 
 export default config;
