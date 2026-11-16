@@ -9,7 +9,7 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "infinity-core/src/types/B
 import {ICLPoolManager} from "infinity-core/src/pool-cl/interfaces/ICLPoolManager.sol";
 import {LPFeeLibrary} from "infinity-core/src/libraries/LPFeeLibrary.sol";
 import {CLPoolParametersHelper} from "infinity-core/src/pool-cl/libraries/CLPoolParametersHelper.sol";
-import {CLBaseHook} from "./pancake/CLBaseHook.sol";
+import {CLBaseHook} from "../../lib/infinity-hooks/src/pool-cl/CLBaseHook.sol";
 import {ISingletonHookFactory} from "./interfaces/ISingletonHookFactory.sol";
 import {AccessControlDefaultAdminRules} from "@openzeppelin/contracts/access/AccessControlDefaultAdminRules.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";

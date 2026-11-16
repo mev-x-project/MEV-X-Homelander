@@ -5,6 +5,7 @@
   "private": true,
   "license": "BUSL-1.1",
   "scripts": {
+    "postinstall": "git submodule update --init lib/infinity-hooks",
     "compile": "hardhat compile",
     "test": "hardhat test test/unit/*.test.ts",
     "test:fork": "hardhat test test/fork/*.test.ts",

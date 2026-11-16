@@ -13,7 +13,6 @@ Each hook is a single non-upgradeable contract that serves every pool created wi
 | --- | ---: | --- |
 | `contracts/singleton_hook/HomelanderUniV4SingletonHook.sol` | 419 | Uniswap V4 hook, inherits v4-periphery `BaseHook` |
 | `contracts/singleton_hook/HomelanderPancakeInfinitySingletonHook.sol` | 424 | PancakeSwap Infinity CL hook, same logic as the V4 hook |
-| `contracts/singleton_hook/pancake/CLBaseHook.sol` | 253 | PancakeSwap's `CLBaseHook` (see below) |
 | `contracts/singleton_hook/SingletonHookFactory.sol` | 29 | CREATE2 factory that hands the constructor arguments to the hooks |
 | `contracts/singleton_hook/interfaces/ISingletonHookFactory.sol` | 7 | |
 | `contracts/singleton_hook/interfaces/IMevxDynamicFeeSource.sol` | 13 | |
@@ -22,7 +21,7 @@ Each hook is a single non-upgradeable contract that serves every pool created wi
 | `contracts/interfaces/IMevxExecutor.sol` | 16 | |
 | `contracts/interfaces/IProfitDistributor.sol` | 10 | |
 | `contracts/Constants.sol` | 14 | Pool type ids |
-| **Total** | **1219** | |
+| **Total** | **966** | |
 
 The two hooks differ only where the AMMs differ. A plain `diff` of the two files is about 140 lines:
 
@@ -31,20 +30,11 @@ The two hooks differ only where the AMMs differ. A plain `diff` of the two files
 - the pool data sent to the router;
 - settling the LP donation, with the `PoolManager` on V4 and the `Vault` on Infinity.
 
-`pancake/CLBaseHook.sol` is PancakeSwap's [`infinity-hooks/src/pool-cl/CLBaseHook.sol`](https://github.com/pancakeswap/infinity-hooks/blob/644c30f1cb09e4eee04becb6198da1414bdb0e77/src/pool-cl/CLBaseHook.sol) at `644c30f` with one change. It reads the vault through `ICLPoolManager.vault()` rather than importing the full `CLPoolManager` contract. That keeps the CLPoolManager implementation out of the hook's compilation unit. The upstream file is published without a license (`UNLICENSED`), and the header is kept as upstream wrote it.
-
-```
-diff infinity-hooks/src/pool-cl/CLBaseHook.sol contracts/singleton_hook/pancake/CLBaseHook.sol
-27d26
-< import {CLPoolManager} from "infinity-core/src/pool-cl/CLPoolManager.sol";
-74c73
-<         vault = CLPoolManager(address(poolManager)).vault();
----
->         vault = _poolManager.vault();
-```
+The Pancake hook inherits PancakeSwap's `CLBaseHook` unchanged from the `lib/infinity-hooks` submodule, pinned to [`pancakeswap/infinity-hooks@644c30f`](https://github.com/pancakeswap/infinity-hooks/blob/644c30f1cb09e4eee04becb6198da1414bdb0e77/src/pool-cl/CLBaseHook.sol).
 
 ## Out of scope
 
+- **PancakeSwap `CLBaseHook`.** It comes from the `lib/infinity-hooks` submodule at `644c30f`.
 - **Dependencies, pinned in `package.json`:**
   - `@uniswap/v4-core` 1.0.2;
   - `@uniswap/v4-periphery` 1.0.3;
@@ -57,7 +47,7 @@ diff infinity-hooks/src/pool-cl/CLBaseHook.sol contracts/singleton_hook/pancake/
 ## Build and tests
 
 ```
-yarn install
+yarn install                               # also initialises the lib/infinity-hooks submodule
 yarn compile
 yarn test                                  # unit tests, local network
 BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork against the live MEV-X stack
@@ -135,5 +125,5 @@ The hooks and the factory are deployed at the same address on every chain:
 | `HomelanderUniV4SingletonHook` | `0x4F0067581931d9205E848862a7042b5EBc11f0c0` | Ethereum, Base, BNB Chain, Robinhood |
 | `HomelanderPancakeInfinitySingletonHook` | `0x5c9717DD21055c40b498F9F38CCe91FC3AAEf2B8` | Base, BNB Chain, Robinhood |
 
-- **UniV4 hook:** the deployed bytecode matches the source in this repository.
-- **Pancake hook:** it was deployed before the audit, from a version whose base contract imported the full `CLPoolManager` and which had more comments. Its logic is the same, but the bytecode differs. It will be redeployed from the audited commit.
+- **UniV4 hook:** the deployed bytecode matches this repository up to the `BackrunFailed` event, which was added for the audit. It will also be redeployed from the audited commit.
+- **Pancake hook:** it was deployed before the audit, from a version with more comments and without the `BackrunFailed` event, so its bytecode differs. It will be redeployed from the audited commit.

@@ -41,7 +41,7 @@ Each is a single, non-upgradeable hook that serves every pool created with it. B
 | `HomelanderUniV4SingletonHook` | `0x4F0067581931d9205E848862a7042b5EBc11f0c0` | Ethereum, Base, BNB Chain, Robinhood |
 | `HomelanderPancakeInfinitySingletonHook` | `0x5c9717DD21055c40b498F9F38CCe91FC3AAEf2B8` | Base, BNB Chain, Robinhood |
 
-The Pancake hook at this address was deployed before the audit and will be redeployed from the audited commit.
+Both hooks will be redeployed from the audited commit; the addresses above are the current deployments.
 
 Hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap`. There are no return-delta permissions, so the hook never takes tokens from a swap or adds tokens to it.
 
@@ -56,10 +56,10 @@ Audit scope, call flow, roles and trust assumptions: [docs/audit/SCOPE.md](docs/
 ## Build and test
 
 ```
-yarn install
+yarn install                               # also initialises the lib/infinity-hooks submodule
 yarn compile
 yarn test                                  # unit tests, both hooks
 BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork, live MEV-X Router and Executor
 ```
 
-Compiler: solc 0.8.26, `viaIR`, optimizer 1 run, EVM `cancun` (as in `hardhat.config.ts`). The deployed `HomelanderUniV4SingletonHook` and `SingletonHookFactory` match the sources in this repository.
+Compiler: solc 0.8.26, `viaIR`, optimizer 1 run, EVM `cancun` (as in `hardhat.config.ts`). The deployed `SingletonHookFactory` matches the source in this repository. Both hooks will be redeployed from the audited commit, since the `BackrunFailed` event was added for the audit.
