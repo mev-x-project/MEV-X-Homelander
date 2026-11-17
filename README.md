@@ -62,4 +62,4 @@ yarn test                                  # unit tests, both hooks
 BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork, live MEV-X Router and Executor
 ```
 
-Compiler: solc 0.8.26, `viaIR`, optimizer 1 run, EVM `cancun` (as in `hardhat.config.ts`). The deployed `SingletonHookFactory` matches the source in this repository. Both hooks will be redeployed from the audited commit, since the `BackrunFailed` event was added for the audit.
+Compiler: solc 0.8.26, `viaIR`, optimizer 1 run, EVM `cancun` (as in `hardhat.config.ts`). Commit `90b640e` holds the Pancake hook exactly as deployed: built from it, the creation and runtime bytecode equal the deployed `HomelanderPancakeInfinitySingletonHook` on BNB Chain, Base and Robinhood. Both hooks will be redeployed from the audited commit, since the `BackrunFailed` event was added for the audit.
