@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
-import {PoolKey} from "infinity-core/src/types/PoolKey.sol";
-import {PoolId} from "infinity-core/src/types/PoolId.sol";
-import {Currency} from "infinity-core/src/types/Currency.sol";
-import {BalanceDelta} from "infinity-core/src/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "infinity-core/src/types/BeforeSwapDelta.sol";
-import {ICLPoolManager} from "infinity-core/src/pool-cl/interfaces/ICLPoolManager.sol";
-import {LPFeeLibrary} from "infinity-core/src/libraries/LPFeeLibrary.sol";
-import {CLPoolParametersHelper} from "infinity-core/src/pool-cl/libraries/CLPoolParametersHelper.sol";
-import {CLBaseHook} from "../../lib/infinity-hooks/src/pool-cl/CLBaseHook.sol";
+import {PoolKey} from "../../dexes/pancakeInfinity/infinity-core/types/PoolKey.sol";
+import {PoolId} from "../../dexes/pancakeInfinity/infinity-core/types/PoolId.sol";
+import {Currency} from "../../dexes/pancakeInfinity/infinity-core/types/Currency.sol";
+import {BalanceDelta} from "../../dexes/pancakeInfinity/infinity-core/types/BalanceDelta.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "../../dexes/pancakeInfinity/infinity-core/types/BeforeSwapDelta.sol";
+import {ICLPoolManager} from "../../dexes/pancakeInfinity/infinity-core/pool-cl/interfaces/ICLPoolManager.sol";
+import {LPFeeLibrary} from "../../dexes/pancakeInfinity/infinity-core/libraries/LPFeeLibrary.sol";
+import {CLPoolParametersHelper} from "../../dexes/pancakeInfinity/infinity-core/pool-cl/libraries/CLPoolParametersHelper.sol";
+import {CLBaseHook} from "../../dexes/pancakeInfinity/hooks/CLBaseHook.sol";
 import {ISingletonHookFactory} from "./interfaces/ISingletonHookFactory.sol";
 import {AccessControlDefaultAdminRules} from "@openzeppelin/contracts/access/AccessControlDefaultAdminRules.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -22,6 +22,9 @@ import {IProfitDistributor} from "../interfaces/IProfitDistributor.sol";
 import {IMevxDynamicFeeSource} from "./interfaces/IMevxDynamicFeeSource.sol";
 import {IMevxExecutorWithStatus} from "./interfaces/IMevxExecutorWithStatus.sol";
 
+/// HomelanderUniV4SingletonHook on PancakeSwap Infinity CL: same pool config, roles, fees, hard mode and
+/// LP share. Deployed through SingletonHookFactory like the UniV4 hook (same address on every chain); Pancake
+/// reads hook permissions from PoolKey.parameters, so the salt is not mined for flag bits.
 contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefaultAdminRules {
 	using LPFeeLibrary for uint24;
 	using CLPoolParametersHelper for bytes32;
@@ -80,8 +83,9 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 	event PoolCallGasBudgetSet(bytes32 indexed poolId, uint32 callGasBudget);
 	event PoolOutOfGasDepthSet(bytes32 indexed poolId, uint8 depth);
 	event ProfitShared(bytes32 indexed poolId, address profitToken, uint256 donatedToLps, uint256 sentToDistributor);
-	event BackrunFailed(bytes32 indexed poolId, bool reverted, bool outOfGas);
 
+	/// Read from the deploying SingletonHookFactory (like HomelanderUniV4SingletonHook): the creation code carries
+	/// no chain data, so the hook has the same address on every chain for the same factory and salt
 	struct Parameters {
 		ICLPoolManager poolManager;
 		address owner;
@@ -348,6 +352,8 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 			overriddenFeeCount: 0
 		});
 
+		// the executor's PancakeInfinity card (poolIndex 10, 88 bytes):
+		// [currency0:20][currency1:20][clPoolManager:20][fee:3][tickSpacing:3][hooks:20][bitmap:2]
 		bytes memory data = abi.encodePacked(
 			Currency.unwrap(key.currency0),
 			Currency.unwrap(key.currency1),
@@ -397,13 +403,13 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 		);
 		uint256 gasAfter = gasleft();
 
-		if (!success || abi.decode(ret, (bool))) {
-			// the swap left the arbitrage less than its budget and it burned its gas
-			// (an out of gas up to outOfGasDepth calls deep hands back at most (1 + depth)/64)
+		// hard mode: the arbitrage failed, the swap left it less than its budget and it burned its gas
+		// (an out of gas up to outOfGasDepth calls deep hands back at most (1 + depth)/64)
+		if (c.hardMode && (!success || abi.decode(ret, (bool)))) {
 			bool shortOfBudget = gasBefore - gasBefore / 64 < c.callGasBudget;
-			bool outOfGas = shortOfBudget && gasAfter * 64 <= gasBefore * (1 + uint256(c.outOfGasDepth));
-			if (c.hardMode && outOfGas) revert("Insufficient gas for afterSwap hook");
-			emit BackrunFailed(poolId, !success, outOfGas);
+			if (shortOfBudget && gasAfter * 64 <= gasBefore * (1 + uint256(c.outOfGasDepth))) {
+				revert("Insufficient gas for afterSwap hook");
+			}
 		}
 
 		return (this.afterSwap.selector, 0);
@@ -489,6 +495,7 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 		}
 	}
 
+	// runs inside the swapper's vault lock: donate creates the debt, the transfer + settle pays it
 	function donateAndSettle(PoolKey calldata key, uint256 amount0, uint256 amount1) external {
 		require(msg.sender == address(this), "self only");
 		poolManager.donate(key, amount0, amount1, "");

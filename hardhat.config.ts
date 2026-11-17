@@ -23,6 +23,8 @@ const config: HardhatUserConfig = {
 					viaIR: true,
 					evmVersion: 'cancun',
 					optimizer: {enabled: true, runs: 1},
+					// as hardhat-deploy compiled the deployed hooks: sources embedded in the metadata
+					metadata: {useLiteralContent: true},
 				},
 			},
 		],
