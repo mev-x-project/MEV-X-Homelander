@@ -125,5 +125,5 @@ The hooks and the factory are deployed at the same address on every chain:
 | `HomelanderUniV4SingletonHook` | `0x4F0067581931d9205E848862a7042b5EBc11f0c0` | Ethereum, Base, BNB Chain, Robinhood |
 | `HomelanderPancakeInfinitySingletonHook` | `0x5c9717DD21055c40b498F9F38CCe91FC3AAEf2B8` | Base, BNB Chain, Robinhood |
 
-- **UniV4 hook:** the deployed bytecode matches this repository up to the `BackrunFailed` event, which was added for the audit. It will also be redeployed from the audited commit.
-- **Pancake hook:** it was deployed before the audit, from a version with more comments and without the `BackrunFailed` event, so its bytecode differs. It will be redeployed from the audited commit.
+- **UniV4 hook:** deployed from the source in commit `8213de9`, which has no `BackrunFailed` event. The deployment was compiled from another repository layout, and source paths are part of the metadata, so the metadata hash differs too. It will be redeployed from the audited commit.
+- **Pancake hook:** commit `90b640e` holds the deployed version at its original paths. Built from that commit, the creation and runtime bytecode equal the deployed ones on BNB Chain, Base and Robinhood. The next commit, `3b45e75`, is the change to the audited version: comments removed, `CLBaseHook` from the submodule, `BackrunFailed` added. It will be redeployed from the audited commit.
