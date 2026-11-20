@@ -74,6 +74,8 @@ BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork against the live 
    2. A per-pool override for `tx.origin`, then one for the pool manager caller. Overrides are stored as `fee + 1`, and 0 means no override.
    3. If the pool enabled it, a dynamic fee from `router.getDynamicFee`. This is a `staticcall` with `callGasBudget` gas. The result is clamped to the pool's bounds, and any failure falls back to the static fee.
    4. The pool's static fee.
+
+   Every LP fee the hook can return is capped at 10% (`MAX_LP_FEE = 100_000`). The cap applies to the static fee, the fee per tick spacing, the default fee, per-address overrides and the dynamic fee bounds (default 0–10%). Each setter, and the constructor for the default fee, rejects higher values, and the dynamic fee is clamped to bounds that cannot exceed the cap.
 4. **`afterSwap` when the caller is the executor** (its own backrun swap). The hook calls `router.initialArbCheck(poolId, !zeroForOne)` with `callGasBudget` gas, so the router can cache the new price, and returns. No nested backrun runs.
 5. **`afterSwap` for any other caller.** The hook calls `this.runArbitrage(...)` with `callGasBudget` gas. Inside the call:
    1. `router.initialArbCheck`. If there is no arbitrage, the hook stops.

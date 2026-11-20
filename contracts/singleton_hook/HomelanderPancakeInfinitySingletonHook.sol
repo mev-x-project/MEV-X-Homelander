@@ -30,7 +30,8 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 	uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
 	uint256 public constant BPS_DENOMINATOR = 10_000;
 	uint8 public constant MAX_OUT_OF_GAS_DEPTH = 32;
-	uint24 public constant MAX_LP_FEE = LPFeeLibrary.ONE_HUNDRED_PERCENT_FEE;
+	// 10%: cap of every LP fee the hook sets (static, per-address and dynamic)
+	uint24 public constant MAX_LP_FEE = 100_000;
 
 	// granted for one pool as poolRole(role, poolId), or for all pools as the role itself
 	bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");

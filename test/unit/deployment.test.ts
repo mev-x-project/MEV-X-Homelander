@@ -50,7 +50,7 @@ for (const dex of DEXES) {
 				{mevxExecutor: ethers.ZeroAddress},
 				{profitDistributor: ethers.ZeroAddress},
 				{owner: ethers.ZeroAddress},
-				{defaultFee: 1_000_001},
+				{defaultFee: 100_001}, // above the 10% cap
 				{defaultLpShareBps: 10_001},
 			])
 				await expect(factory.deploy(salt, s.creationCode, encodeParameters({...s.params, ...bad})), JSON.stringify(bad)).to.be.revertedWith('deploy failed');

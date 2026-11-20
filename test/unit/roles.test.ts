@@ -129,7 +129,7 @@ for (const dex of DEXES) {
 			const o = await s.hook.poolConfig(before.poolId);
 			expect([o.lpShareBps, o.hardMode]).to.deep.equal([5000n, false]);
 			await expect(s.hook.setDefaults(4000, 1000, 5_000_001, true, 0, 1)).to.be.revertedWith('callGasBudget too high');
-			await expect(s.hook.setDefaults(1_000_001, 1000, 1, true, 0, 1)).to.be.revertedWith('invalid fee');
+			await expect(s.hook.setDefaults(100_001, 1000, 1, true, 0, 1)).to.be.revertedWith('invalid fee');
 			await expect(s.hook.setDefaults(1, 10_001, 1, true, 0, 1)).to.be.revertedWith('lp share too high');
 			await expect(s.hook.setDefaults(1, 1, 1, true, 2, 1)).to.be.revertedWith('invalid bounds');
 			await expect(s.hook.setDefaultOutOfGasDepth(33)).to.be.revertedWith('depth too high');
