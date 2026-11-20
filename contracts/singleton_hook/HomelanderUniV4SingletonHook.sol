@@ -33,6 +33,8 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 	uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
 	uint256 public constant BPS_DENOMINATOR = 10_000;
 	uint8 public constant MAX_OUT_OF_GAS_DEPTH = 32;
+	// 10%: cap of every LP fee the hook sets (static, per-address and dynamic)
+	uint24 public constant MAX_LP_FEE = 100_000;
 	// bytes32(uint256(keccak256("homelander.singletonHook.backrun")) - 1): set while runArbitrage runs the executor
 	uint256 private constant _BACKRUN_SLOT = 0xe616359ca37d22c995db3bcf994700189c8d1fa1172a1c0593310f2bf012d5c2;
 
@@ -102,7 +104,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		require(p.mevxRouter != address(0), "mevxRouter is zero address");
 		require(p.mevxExecutor != address(0), "mevxExecutor is zero address");
 		require(p.profitDistributor != address(0), "profitDistributor is zero address");
-		require(p.defaultFee <= LPFeeLibrary.MAX_LP_FEE, "invalid fee");
+		require(p.defaultFee <= MAX_LP_FEE, "invalid fee");
 		require(p.defaultLpShareBps <= BPS_DENOMINATOR, "lp share too high");
 
 		mevxRouter = IMevxRouter(p.mevxRouter);
@@ -111,7 +113,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		defaultFee = p.defaultFee;
 		defaultLpShareBps = p.defaultLpShareBps;
 		defaultCallGasBudget = uint32(MAX_CALL_GAS_BUDGET);
-		defaultDynamicFeeMax = uint24(LPFeeLibrary.MAX_LP_FEE);
+		defaultDynamicFeeMax = MAX_LP_FEE;
 		defaultOutOfGasDepth = 8;
 
 		_setFeeForTickSpacing(1, 100);
@@ -191,7 +193,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		uint24 dynamicFeeMin,
 		uint24 dynamicFeeMax
 	) external onlyRole(DEFAULT_ADMIN_ROLE) {
-		require(fee <= LPFeeLibrary.MAX_LP_FEE, "invalid fee");
+		require(fee <= MAX_LP_FEE, "invalid fee");
 		require(lpShareBps <= BPS_DENOMINATOR, "lp share too high");
 		require(callGasBudget <= MAX_CALL_GAS_BUDGET, "callGasBudget too high");
 		_checkBounds(dynamicFeeMin, dynamicFeeMax);
@@ -214,19 +216,19 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 	}
 
 	function _setFeeForTickSpacing(int24 tickSpacing, uint24 fee) internal {
-		require(fee <= LPFeeLibrary.MAX_LP_FEE, "invalid fee");
+		require(fee <= MAX_LP_FEE, "invalid fee");
 		emit FeeForTickSpacingSet(tickSpacing, feeByTickSpacing[tickSpacing], fee);
 		feeByTickSpacing[tickSpacing] = fee;
 	}
 
 	function _checkBounds(uint24 minFee, uint24 maxFee) private pure {
-		require(minFee <= maxFee && maxFee <= LPFeeLibrary.MAX_LP_FEE, "invalid bounds");
+		require(minFee <= maxFee && maxFee <= MAX_LP_FEE, "invalid bounds");
 	}
 
 	// ──────────────────── Fee manager ────────────────────
 
 	function setPoolFee(bytes32 poolId, uint24 fee) external onlyPoolRole(FEE_MANAGER_ROLE, poolId) {
-		require(fee <= LPFeeLibrary.MAX_LP_FEE, "invalid fee");
+		require(fee <= MAX_LP_FEE, "invalid fee");
 		poolConfig[poolId].staticFee = fee;
 		emit PoolStaticFeeSet(poolId, fee);
 	}
@@ -246,7 +248,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 	}
 
 	function setFeeOverride(bytes32 poolId, address account, uint24 feePlusOne) external onlyPoolRole(FEE_MANAGER_ROLE, poolId) {
-		require(feePlusOne <= LPFeeLibrary.MAX_LP_FEE + 1, "invalid fee");
+		require(feePlusOne <= MAX_LP_FEE + 1, "invalid fee");
 		PoolConfig storage c = poolConfig[poolId];
 		uint24 old = feeOverridePlusOne[poolId][account];
 		if (old == 0 && feePlusOne != 0) c.overriddenFeeCount++;

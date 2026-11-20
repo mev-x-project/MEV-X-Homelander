@@ -109,15 +109,41 @@ for (const dex of DEXES) {
 			expect(await s.hook.getFee(pool.poolId, ZERO, s.deployer.address, true, -1)).to.equal(0n);
 		});
 
-		it('rejects out-of-range fees and bounds, and unknown pools', async () => {
+		it('every LP fee is capped at 10%: static, per tick spacing, default, per-address and dynamic', async () => {
 			const s = await setup();
 			const pool = await createPool(s, 10);
-			await expect(s.hook.setPoolFee(pool.poolId, 1_000_001)).to.be.revertedWith('invalid fee');
-			await expect(s.hook.setFeeOverride(pool.poolId, ZERO, 1_000_002)).to.be.revertedWith('invalid fee');
-			await (await s.hook.setFeeOverride(pool.poolId, ZERO, 1_000_001)).wait(); // 100%
+			const MAX = 100_000n;
+			expect(await s.hook.MAX_LP_FEE()).to.equal(MAX);
+			expect(await s.hook.defaultDynamicFeeMax()).to.equal(MAX);
+			expect((await s.hook.poolConfig(pool.poolId)).dynamicFeeMax).to.equal(MAX);
+
+			await (await s.hook.setPoolFee(pool.poolId, MAX)).wait();
+			await expect(s.hook.setPoolFee(pool.poolId, MAX + 1n)).to.be.revertedWith('invalid fee');
+			await (await s.hook.setFeeForTickSpacing(10, MAX)).wait();
+			await expect(s.hook.setFeeForTickSpacing(10, MAX + 1n)).to.be.revertedWith('invalid fee');
+			await (await s.hook.setDefaults(MAX, 0, 1, false, 0, MAX)).wait();
+			await expect(s.hook.setDefaults(MAX + 1n, 0, 1, false, 0, MAX)).to.be.revertedWith('invalid fee');
+			await expect(s.hook.setDefaults(MAX, 0, 1, false, 0, MAX + 1n)).to.be.revertedWith('invalid bounds');
+			await (await s.hook.setFeeOverride(pool.poolId, ZERO, MAX + 1n)).wait(); // stored as fee + 1
+			expect(await s.hook.getFee(pool.poolId, ZERO, ZERO, true, -1)).to.equal(MAX);
+			await expect(s.hook.setFeeOverride(pool.poolId, ZERO, MAX + 2n)).to.be.revertedWith('invalid fee');
+			await (await s.hook.setDynamicFeeBounds(pool.poolId, 0, MAX)).wait();
+			await expect(s.hook.setDynamicFeeBounds(pool.poolId, 0, MAX + 1n)).to.be.revertedWith('invalid bounds');
+		});
+
+		it('a dynamic fee above 10% from the fee source is clamped to 10%, also in a swap', async () => {
+			const s = await setup();
+			const pool = await createPool(s, 10);
+			await (await s.hook.setDynamicFeeEnabled(pool.poolId, true)).wait();
+			await (await s.mevxRouter.setDynamicFee(FeeMode.Fixed, 900_000)).wait();
+			expect(await s.hook.getFee(pool.poolId, ZERO, ZERO, true, -1)).to.equal(100_000n);
+			expect(await swapFee(s, await swap(s, pool, true))).to.deep.equal([100_000n]);
+		});
+
+		it('rejects inverted bounds and unknown pools', async () => {
+			const s = await setup();
+			const pool = await createPool(s, 10);
 			await expect(s.hook.setDynamicFeeBounds(pool.poolId, 3000, 2000)).to.be.revertedWith('invalid bounds');
-			await expect(s.hook.setDynamicFeeBounds(pool.poolId, 0, 1_000_001)).to.be.revertedWith('invalid bounds');
-			await expect(s.hook.setFeeForTickSpacing(10, 1_000_001)).to.be.revertedWith('invalid fee');
 			await expect(s.hook.setPoolFee(ethers.id('unknown'), 100)).to.be.revertedWith('unknown pool');
 			await expect(s.hook.setLpShareBps(ethers.id('unknown'), 100)).to.be.revertedWith('unknown pool');
 		});

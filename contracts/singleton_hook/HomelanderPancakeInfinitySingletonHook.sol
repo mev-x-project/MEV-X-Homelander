@@ -30,7 +30,8 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 	uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
 	uint256 public constant BPS_DENOMINATOR = 10_000;
 	uint8 public constant MAX_OUT_OF_GAS_DEPTH = 32;
-	uint24 public constant MAX_LP_FEE = LPFeeLibrary.ONE_HUNDRED_PERCENT_FEE;
+	// 10%: cap of every LP fee the hook sets (static, per-address and dynamic)
+	uint24 public constant MAX_LP_FEE = 100_000;
 	// bytes32(uint256(keccak256("homelander.singletonHook.backrun")) - 1): set while runArbitrage runs the executor
 	uint256 private constant _BACKRUN_SLOT = 0xe616359ca37d22c995db3bcf994700189c8d1fa1172a1c0593310f2bf012d5c2;
 
