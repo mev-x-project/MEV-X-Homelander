@@ -103,6 +103,8 @@ contract MockUniV4Executor is UniV4Settlement {
 			uint256 x;
 			while (gasleft() > 1000) x = uint256(keccak256(abi.encode(x)));
 		}
+		// the real executor settles first in every V4 / Infinity step, which consumes a sync the caller left pending
+		try manager.settle() {} catch {}
 		if (amountIn > 0) {
 			SwapParams memory params = SwapParams(zeroForOne, -int256(amountIn), zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
 			_settleDeltas(key, manager.swap(key, params, ""), address(this), address(this));
@@ -112,5 +114,69 @@ contract MockUniV4Executor is UniV4Settlement {
 			else IERC20(profitToken).transfer(profitRecipient, profit);
 		}
 		return (true, 0);
+	}
+}
+
+/// Router that keeps a currency synced across its swaps, the way a caller that transfers its input ahead of the swap
+/// settles: sync, pay (before or after the swaps), swap on every pool, one settle() at the end.
+/// `hold` is the currency kept synced: the input (address(0) here means "the input"), or another token, in which case the
+/// input is paid atomically first and `extra` of `hold` is paid and taken back around the swaps
+contract UniV4SyncHoldingRouter is IUnlockCallback {
+	IPoolManager public immutable manager;
+
+	struct Order {
+		PoolKey[] keys;
+		bool zeroForOne;
+		uint256 amountIn;
+		bool payBefore;
+		uint256 extra;
+		address hold;
+	}
+
+	constructor(IPoolManager manager_) {
+		manager = manager_;
+	}
+
+	receive() external payable {}
+
+	function swap(Order calldata order) external payable {
+		manager.unlock(abi.encode(msg.sender, order));
+		if (address(this).balance > 0) payable(msg.sender).transfer(address(this).balance);
+	}
+
+	function unlockCallback(bytes calldata data) external returns (bytes memory) {
+		require(msg.sender == address(manager), "not manager");
+		(address payer, Order memory o) = abi.decode(data, (address, Order));
+		Currency input = o.zeroForOne ? o.keys[0].currency0 : o.keys[0].currency1;
+		uint256 total = o.amountIn * o.keys.length;
+		Currency hold = o.hold == address(0) ? input : Currency.wrap(o.hold);
+		uint256 owed = o.extra;
+		if (Currency.unwrap(hold) == Currency.unwrap(input)) owed += total;
+		else _payNow(input, payer, total);
+
+		manager.sync(hold);
+		if (o.payBefore) _transfer(hold, payer, owed);
+		for (uint256 i; i < o.keys.length; i++) {
+			SwapParams memory params = SwapParams(o.zeroForOne, -int256(o.amountIn), o.zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1);
+			BalanceDelta delta = manager.swap(o.keys[i], params, "");
+			int128 out = o.zeroForOne ? delta.amount1() : delta.amount0();
+			manager.take(o.zeroForOne ? o.keys[i].currency1 : o.keys[i].currency0, payer, uint256(uint128(out)));
+		}
+		if (!o.payBefore) _transfer(hold, payer, owed);
+		uint256 paid = hold.isAddressZero() ? manager.settle{value: owed}() : manager.settle();
+		require(paid == owed, "credited a different amount");
+		if (o.extra != 0) manager.take(hold, payer, o.extra);
+		return "";
+	}
+
+	function _payNow(Currency currency, address payer, uint256 amount) private {
+		manager.sync(currency);
+		_transfer(currency, payer, amount);
+		if (currency.isAddressZero()) manager.settle{value: amount}();
+		else manager.settle();
+	}
+
+	function _transfer(Currency currency, address payer, uint256 amount) private {
+		if (!currency.isAddressZero()) IERC20(Currency.unwrap(currency)).transferFrom(payer, address(manager), amount);
 	}
 }

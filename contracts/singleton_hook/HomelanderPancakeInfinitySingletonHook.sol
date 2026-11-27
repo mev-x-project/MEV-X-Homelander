@@ -426,11 +426,16 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 
 		if (c.backrunSkipCount != 0 && (backrunSkipped[poolId][tx.origin] || backrunSkipped[poolId][sender])) return (this.afterSwap.selector, 0);
 
+		// a currency the caller synced and has not settled yet would be consumed or reset by the settlements of the
+		// backrun and the donation: it is settled to the hook here and synced again with the same unsettled amount after.
+		// Both run outside runArbitrage, so a failure of the synced token reverts the swap instead of skipping the backrun
+		(Currency synced, uint256 syncedPaid) = _settleCallerSync();
 		uint256 gasBefore = gasleft();
 		(bool success, bytes memory ret) = address(this).call{gas: c.callGasBudget}(
 			abi.encodeCall(this.runArbitrage, (poolId, params.zeroForOne, -delta.amount0(), -delta.amount1(), sender))
 		);
 		uint256 gasAfter = gasleft();
+		_resyncCallerSync(synced, syncedPaid);
 
 		if (!success || abi.decode(ret, (bool))) {
 			// the swap left the arbitrage less than its budget and it burned its gas
@@ -512,6 +517,20 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 		}
 
 		emit ProfitShared(poolId, profitToken, donated, rest);
+	}
+
+	function _settleCallerSync() private returns (Currency currency, uint256 paid) {
+		uint256 reserve;
+		(currency, reserve) = vault.getVaultReserve();
+		if (currency.isNative()) return (currency, 0);
+		if (currency.balanceOf(address(vault)) > reserve) paid = vault.settle();
+	}
+
+	function _resyncCallerSync(Currency currency, uint256 paid) private {
+		if (currency.isNative()) return;
+		if (paid != 0) vault.take(currency, address(this), paid);
+		vault.sync(currency);
+		if (paid != 0) IERC20(Currency.unwrap(currency)).safeTransfer(address(vault), paid);
 	}
 
 	function _donateToPool(bytes32 poolId, address profitToken, uint256 amount) internal returns (uint256) {

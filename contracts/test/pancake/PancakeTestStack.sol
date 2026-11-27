@@ -110,6 +110,8 @@ contract MockPancakeExecutor is PancakeSettlement {
 			uint256 x;
 			while (gasleft() > 1000) x = uint256(keccak256(abi.encode(x)));
 		}
+		// the real executor settles first in every V4 / Infinity step, which consumes a sync the caller left pending
+		try vault.settle() {} catch {}
 		if (amountIn > 0) {
 			ICLPoolManager.SwapParams memory params = ICLPoolManager.SwapParams(
 				zeroForOne,
@@ -123,5 +125,72 @@ contract MockPancakeExecutor is PancakeSettlement {
 			else IERC20(profitToken).transfer(profitRecipient, profit);
 		}
 		return (true, 0);
+	}
+}
+
+/// Router that keeps a currency synced across its swaps (see UniV4SyncHoldingRouter)
+contract PancakeSyncHoldingRouter is ILockCallback {
+	IVault public immutable vault;
+	ICLPoolManager public immutable manager;
+
+	struct Order {
+		PoolKey[] keys;
+		bool zeroForOne;
+		uint256 amountIn;
+		bool payBefore;
+		uint256 extra;
+		address hold;
+	}
+
+	constructor(IVault vault_, ICLPoolManager manager_) {
+		vault = vault_;
+		manager = manager_;
+	}
+
+	receive() external payable {}
+
+	function swap(Order calldata order) external payable {
+		vault.lock(abi.encode(msg.sender, order));
+		if (address(this).balance > 0) payable(msg.sender).transfer(address(this).balance);
+	}
+
+	function lockAcquired(bytes calldata data) external returns (bytes memory) {
+		require(msg.sender == address(vault), "not vault");
+		(address payer, Order memory o) = abi.decode(data, (address, Order));
+		Currency input = o.zeroForOne ? o.keys[0].currency0 : o.keys[0].currency1;
+		uint256 total = o.amountIn * o.keys.length;
+		Currency hold = o.hold == address(0) ? input : Currency.wrap(o.hold);
+		uint256 owed = o.extra;
+		if (Currency.unwrap(hold) == Currency.unwrap(input)) owed += total;
+		else _payNow(input, payer, total);
+
+		vault.sync(hold);
+		if (o.payBefore) _transfer(hold, payer, owed);
+		for (uint256 i; i < o.keys.length; i++) {
+			ICLPoolManager.SwapParams memory params = ICLPoolManager.SwapParams(
+				o.zeroForOne,
+				-int256(o.amountIn),
+				o.zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1
+			);
+			BalanceDelta delta = manager.swap(o.keys[i], params, "");
+			int128 out = o.zeroForOne ? delta.amount1() : delta.amount0();
+			vault.take(o.zeroForOne ? o.keys[i].currency1 : o.keys[i].currency0, payer, uint256(uint128(out)));
+		}
+		if (!o.payBefore) _transfer(hold, payer, owed);
+		uint256 paid = hold.isNative() ? vault.settle{value: owed}() : vault.settle();
+		require(paid == owed, "credited a different amount");
+		if (o.extra != 0) vault.take(hold, payer, o.extra);
+		return "";
+	}
+
+	function _payNow(Currency currency, address payer, uint256 amount) private {
+		vault.sync(currency);
+		_transfer(currency, payer, amount);
+		if (currency.isNative()) vault.settle{value: amount}();
+		else vault.settle();
+	}
+
+	function _transfer(Currency currency, address payer, uint256 amount) private {
+		if (!currency.isNative()) IERC20(Currency.unwrap(currency)).transferFrom(payer, address(vault), amount);
 	}
 }
