@@ -163,6 +163,27 @@ describeFork(`Base fork at block ${BLOCK}: live router and executor backrun a sw
 		return {donated, sent};
 	}
 
+	/// the same swap from a caller that keeps a currency synced across it (see UniV4SyncHoldingRouter): paying before the
+	/// swap, after it, and with another currency synced and overpaid. The live executor's settlements run while the sync
+	/// is pending; the caller's settle() must still be credited exactly what it paid
+	async function expectBackrunsUnderPendingSync(hook: any, manager: any, router: any, key: any, poolId: string, executor: string) {
+		// a token outside the swap for the multi-hop case (a held currency the caller also takes would underflow its own settle)
+		const other: any = await (await ethers.getContractFactory('TestERC20', user)).deploy('HOLD');
+		await (await other.mint(user.address, 10n ** 24n)).wait();
+		for (const t of [weth, usdc, other]) await (await t.approve(router, ethers.MaxUint256)).wait();
+		for (const [payBefore, hold, extra] of [
+			[true, ethers.ZeroAddress, 0n],
+			[false, ethers.ZeroAddress, 0n],
+			[true, other.target as string, 1234n],
+			[false, other.target as string, 1234n],
+		] as const) {
+			const order = {keys: [key], zeroForOne: true, amountIn: 10n ** 18n, payBefore, extra, hold};
+			const r = (await (await router.swap(order, {gasLimit: 6_000_000})).wait())!;
+			await expectBackrun(hook, manager, r, poolId, executor);
+			console.log(`      pending sync (pay ${payBefore ? 'before' : 'after'}, hold ${hold === ethers.ZeroAddress ? 'input' : 'other token'}): swap gas ${r.gasUsed}`);
+		}
+	}
+
 	it('Uniswap V4 singleton hook', async () => {
 		const hook = await installHook('HomelanderUniV4SingletonHook', BASE.uniV4.hook, (f, c) => mineUniV4Salt(f, c));
 		const manager: any = await ethers.getContractAt('PoolManager', BASE.uniV4.poolManager, user);
@@ -191,6 +212,8 @@ describeFork(`Base fork at block ${BLOCK}: live router and executor backrun a sw
 		const r = (await (await testRouter.swap(key, true, 10n ** 18n, {gasLimit: 6_000_000})).wait())!;
 		const {sent} = await expectBackrun(hook, manager, r, poolId, await hook.mevxExecutor());
 		console.log(`      profit ${ethers.formatEther(sent * 2n)} WETH, swap gas ${r.gasUsed}`);
+		const holding = await deployTestRouter('UniV4SyncHoldingRouter', [BASE.uniV4.poolManager], user);
+		await expectBackrunsUnderPendingSync(hook, manager, holding, key, poolId, await hook.mevxExecutor());
 	});
 
 	it('PancakeSwap Infinity CL singleton hook', async () => {
@@ -229,5 +252,7 @@ describeFork(`Base fork at block ${BLOCK}: live router and executor backrun a sw
 		const r = (await (await testRouter.swap(key, true, 10n ** 18n, {gasLimit: 6_000_000})).wait())!;
 		const {sent} = await expectBackrun(hook, manager, r, poolId, await hook.mevxExecutor());
 		console.log(`      profit ${ethers.formatEther(sent * 2n)} WETH, swap gas ${r.gasUsed}`);
+		const holding = await deployTestRouter('PancakeSyncHoldingRouter', [BASE.pancake.vault, BASE.pancake.clPoolManager], user);
+		await expectBackrunsUnderPendingSync(hook, manager, holding, key, poolId, await hook.mevxExecutor());
 	});
 });

@@ -75,7 +75,9 @@ BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork against the live 
    3. If the pool enabled it, a dynamic fee from `router.getDynamicFee`. This is a `staticcall` with `callGasBudget` gas. The result is clamped to the pool's bounds, and any failure falls back to the static fee.
    4. The pool's static fee.
 4. **`afterSwap` for the executor's swap inside this hook's backrun** (sender is the executor and the backrun flag is set). The hook calls `router.initialArbCheck(poolId, !zeroForOne)` with `callGasBudget` gas, so the router can cache the new price, and returns. No nested backrun runs.
-5. **`afterSwap` for any other swap.** The hook calls `this.runArbitrage(...)` with `callGasBudget` gas. Inside the call:
+5. **`afterSwap` for any other swap.**
+   - **A sync the caller left pending is set aside.** A caller may keep a currency synced across the swap (`sync`, transfer, swap, `settle` later). The settlements of the backrun and of the donation would consume or reset that sync, and the caller's later `settle()` would then credit nothing. So, if the pool manager (V4: `getSyncedCurrency`/`getSyncedReserves`) or the Vault (Infinity: `getVaultReserve`) has a non-native currency synced, the hook calls `settle()` for the amount already paid (balance above the synced reserve, if any) before the backrun. After it, the hook calls `take` for that amount, `sync` for the currency and transfers the amount back. The currency is synced again, and the caller's `settle()` is credited exactly what it paid, plus whatever it pays afterwards. A native sync needs nothing: it is the pool manager's default state. Both steps run in `afterSwap` itself, outside the self-call, so a synced token that reverts or burns gas reverts the caller's own swap instead of skipping the backrun.
+   - The hook calls `this.runArbitrage(...)` with `callGasBudget` gas. Inside the call:
    1. `router.initialArbCheck`. If there is no arbitrage, the hook stops.
    2. `router.constructArbitrageRoute(poolId, zeroForOne, arbData, -delta.amount0, -delta.amount1)`. If it reports no route, the hook stops.
    3. `executor.executeRouteWithStatus(route, pools, amountIn, profitToken, hook)` inside try/catch.
@@ -113,6 +115,7 @@ The hooks use OpenZeppelin `AccessControlDefaultAdminRules` with a transfer dela
 - **`distributeProfit` failures are swallowed.** The tokens have already been transferred to the distributor at that point.
 - **The donation goes to the LPs in range at the current tick.** As with any `donate`, just-in-time liquidity can capture part of it.
 - **Fee overrides look at `tx.origin` first.** This is a "wallet tier" that applies whatever router the wallet uses.
+- **A caller that takes the currency it synced before settling** leaves the pool manager's balance below the synced reserve, and its own `settle()` would underflow. The hook then settles nothing and, after the backrun, syncs the currency again at the current balance, so the caller's later `settle()` counts what it pays from that point on.
 - **Soft mode and a router that burns its whole budget.** If the router or executor burns all of its gas, and the transaction gave the backrun less than its budget, the 1/64 gas left may not be enough to finish the swap. The transaction then runs out of gas, which the EVM cannot prevent. The live router stops before using its whole budget. The unit test `hard mode / soft mode` shows both modes at different transaction gas limits.
 
 ## Deployments

@@ -6,6 +6,7 @@ import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {TransientStateLibrary} from "@uniswap/v4-core/src/libraries/TransientStateLibrary.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {BeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
@@ -27,6 +28,7 @@ import {ISingletonHookFactory} from "./interfaces/ISingletonHookFactory.sol";
 contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRules {
 	using LPFeeLibrary for uint24;
 	using SafeERC20 for IERC20;
+	using TransientStateLibrary for IPoolManager;
 
 	uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
 	uint256 public constant BPS_DENOMINATOR = 10_000;
@@ -389,11 +391,16 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 			return (BaseHook.afterSwap.selector, 0);
 		}
 
+		// a currency the caller synced and has not settled yet would be consumed or reset by the settlements of the
+		// backrun and the donation: it is settled to the hook here and synced again with the same unsettled amount after.
+		// Both run outside runArbitrage, so a failure of the synced token reverts the swap instead of skipping the backrun
+		(Currency synced, uint256 syncedPaid) = _settleCallerSync();
 		uint256 gasBefore = gasleft();
 		(bool success, bytes memory ret) = address(this).call{gas: c.callGasBudget}(
 			abi.encodeCall(this.runArbitrage, (poolId, params.zeroForOne, -delta.amount0(), -delta.amount1(), sender))
 		);
 		uint256 gasAfter = gasleft();
+		_resyncCallerSync(synced, syncedPaid);
 
 		if (!success || abi.decode(ret, (bool))) {
 			// the swap left the arbitrage less than its budget and it burned its gas
@@ -475,6 +482,19 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		}
 
 		emit ProfitShared(poolId, profitToken, donated, rest);
+	}
+
+	function _settleCallerSync() private returns (Currency currency, uint256 paid) {
+		currency = poolManager.getSyncedCurrency();
+		if (currency.isAddressZero()) return (currency, 0);
+		if (currency.balanceOf(address(poolManager)) > poolManager.getSyncedReserves()) paid = poolManager.settle();
+	}
+
+	function _resyncCallerSync(Currency currency, uint256 paid) private {
+		if (currency.isAddressZero()) return;
+		if (paid != 0) poolManager.take(currency, address(this), paid);
+		poolManager.sync(currency);
+		if (paid != 0) IERC20(Currency.unwrap(currency)).safeTransfer(address(poolManager), paid);
 	}
 
 	function _donateToPool(bytes32 poolId, address profitToken, uint256 amount) internal returns (uint256) {
