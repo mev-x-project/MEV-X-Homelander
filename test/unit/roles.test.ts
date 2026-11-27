@@ -1,7 +1,7 @@
 import {expect} from 'chai';
 import {loadFixture} from '@nomicfoundation/hardhat-network-helpers';
 import {DEXES} from '../shared/dexes';
-import {FEE_MANAGER_ROLE, POOL_ADMIN_ROLE, createPool, fixtureFor} from '../shared/stack';
+import {BACKRUN_SKIP_ROLE, FEE_MANAGER_ROLE, HARD_MODE_SKIP_ROLE, POOL_ADMIN_ROLE, createPool, fixtureFor} from '../shared/stack';
 
 const MISSING_ROLE = /AccessControl: account .* is missing role/;
 
@@ -22,6 +22,8 @@ for (const dex of DEXES) {
 				() => h.setHardMode(poolId, true),
 				() => h.setCallGasBudget(poolId, 1),
 				() => h.setOutOfGasDepth(poolId, 1),
+				() => h.setBackrunSkip(poolId, s.bob.address, true),
+				() => h.setHardModeSkip(poolId, s.bob.address, true),
 			])
 				await expect(call()).to.be.revertedWith('not authorized');
 			for (const call of [
@@ -64,6 +66,7 @@ for (const dex of DEXES) {
 			await expect(h.setHardMode(poolId, true)).to.emit(s.hook, 'PoolHardModeSet').withArgs(poolId, true);
 			await expect(h.setCallGasBudget(poolId, 2_000_000)).to.emit(s.hook, 'PoolCallGasBudgetSet').withArgs(poolId, 2_000_000);
 			await expect(h.setOutOfGasDepth(poolId, 12)).to.emit(s.hook, 'PoolOutOfGasDepthSet').withArgs(poolId, 12);
+			await expect(h.setBackrunSkip(poolId, s.carol.address, true)).to.be.revertedWith('not authorized'); // separate role
 			const c = await s.hook.poolConfig(poolId);
 			expect([c.lpShareBps, c.hardMode, c.callGasBudget, c.outOfGasDepth]).to.deep.equal([2500n, true, 2_000_000n, 12n]);
 			expect(await s.hook.getHardMode(poolId)).to.equal(true);
@@ -71,6 +74,41 @@ for (const dex of DEXES) {
 			await expect(h.setCallGasBudget(poolId, 5_000_001)).to.be.revertedWith('callGasBudget too high');
 			await expect(h.setOutOfGasDepth(poolId, 33)).to.be.revertedWith('depth too high');
 			await expect(h.setPoolFee(poolId, 1)).to.be.revertedWith('not authorized');
+		});
+
+		it('a backrun skip manager sets the backrun skip list of its pool only; the admin can too', async () => {
+			const s = await setup();
+			const a = await createPool(s, 10);
+			const b = await createPool(s, 60);
+			await (await s.hook.grantRole(await s.hook.poolRole(BACKRUN_SKIP_ROLE, a.poolId), s.dave.address)).wait();
+			const h: any = s.hook.connect(s.dave);
+			await expect(h.setBackrunSkip(a.poolId, s.carol.address, true)).to.emit(s.hook, 'BackrunSkipSet').withArgs(a.poolId, s.carol.address, true);
+			expect(await s.hook.backrunSkipped(a.poolId, s.carol.address)).to.equal(true);
+			await expect(h.setHardModeSkip(a.poolId, s.carol.address, true)).to.be.revertedWith('not authorized'); // separate role
+			await expect(h.setBackrunSkip(b.poolId, s.carol.address, true)).to.be.revertedWith('not authorized');
+			await expect(h.setPoolFee(a.poolId, 1)).to.be.revertedWith('not authorized');
+			await expect(h.setLpShareBps(a.poolId, 1)).to.be.revertedWith('not authorized');
+			await (await s.hook.setBackrunSkip(b.poolId, s.carol.address, true)).wait(); // admin
+			await (await s.hook.grantRole(BACKRUN_SKIP_ROLE, s.alice.address)).wait(); // all pools
+			await (await (s.hook.connect(s.alice) as any).setBackrunSkip(b.poolId, s.carol.address, false)).wait();
+			expect(await s.hook.backrunSkipped(b.poolId, s.carol.address)).to.equal(false);
+		});
+
+		it('a hard mode skip manager sets the hard mode skip list of its pool only; the admin can too', async () => {
+			const s = await setup();
+			const a = await createPool(s, 10);
+			const b = await createPool(s, 60);
+			await (await s.hook.grantRole(await s.hook.poolRole(HARD_MODE_SKIP_ROLE, a.poolId), s.dave.address)).wait();
+			const h: any = s.hook.connect(s.dave);
+			await expect(h.setHardModeSkip(a.poolId, s.carol.address, true)).to.emit(s.hook, 'HardModeSkipSet').withArgs(a.poolId, s.carol.address, true);
+			expect(await s.hook.hardModeSkipped(a.poolId, s.carol.address)).to.equal(true);
+			await expect(h.setBackrunSkip(a.poolId, s.carol.address, true)).to.be.revertedWith('not authorized'); // separate role
+			await expect(h.setHardModeSkip(b.poolId, s.carol.address, true)).to.be.revertedWith('not authorized');
+			await expect(h.setHardMode(a.poolId, false)).to.be.revertedWith('not authorized');
+			await (await s.hook.setHardModeSkip(b.poolId, s.carol.address, true)).wait(); // admin
+			await (await s.hook.grantRole(HARD_MODE_SKIP_ROLE, s.alice.address)).wait(); // all pools
+			await (await (s.hook.connect(s.alice) as any).setHardModeSkip(b.poolId, s.carol.address, false)).wait();
+			expect(await s.hook.hardModeSkipped(b.poolId, s.carol.address)).to.equal(false);
 		});
 
 		it('the role itself (not per pool) covers every pool', async () => {

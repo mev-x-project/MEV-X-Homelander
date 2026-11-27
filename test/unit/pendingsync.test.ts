@@ -130,13 +130,17 @@ for (const dex of DEXES) {
 				expect(shared(s, r).length).to.equal(0);
 			});
 
-		it('no arbitrage: the swap completes', async () => {
+		it('no arbitrage, or the wallet is on the backrun skip list: the swap completes', async () => {
 			const s = await setup();
 			const pool = await createPool(s, 10);
 			const router = await holdingRouter(s);
 			const r = await holdSwap(router, [pool]);
 			expect(await s.mevxRouter.checkCalls()).to.equal(1n);
 			expect(shared(s, r).length).to.equal(0);
+			await armArbitrage(s, pool, true, {profit: PROFIT});
+			await (await s.hook.setBackrunSkip(pool.poolId, s.deployer.address, true)).wait();
+			const r2 = await holdSwap(router, [pool]);
+			expect(shared(s, r2).length).to.equal(0);
 		});
 
 		describe('a synced token that misbehaves only reverts the caller own swap, never skips the backrun', () => {

@@ -8,6 +8,8 @@ export const DEFAULT_FEE = 3000;
 export const DEFAULT_LP_SHARE_BPS = 5000;
 export const FEE_MANAGER_ROLE = ethers.id('FEE_MANAGER_ROLE');
 export const POOL_ADMIN_ROLE = ethers.id('POOL_ADMIN_ROLE');
+export const BACKRUN_SKIP_ROLE = ethers.id('BACKRUN_SKIP_ROLE');
+export const HARD_MODE_SKIP_ROLE = ethers.id('HARD_MODE_SKIP_ROLE');
 export const INITIAL_LIQUIDITY = 10n ** 24n;
 export const SQRT_PRICE_1_1 = 2n ** 96n;
 

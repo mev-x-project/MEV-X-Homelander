@@ -75,6 +75,17 @@ for (const dex of DEXES) {
 			for (const share of [0.6, 0.9, 1.0, 1.5]) expect(await outcome(s, pool, base, share), `${share}`).to.equal('noBackrun');
 		});
 
+		it('hard mode does not apply to swaps whose wallet (tx.origin) or router (pool manager caller) is on the hard mode skip list', async () => {
+			const s = await setup();
+			const {pool, base} = await prepare(s, {hard: true, router: RouterMode.BurnGas});
+			await expect(s.hook.setHardModeSkip(pool.poolId, s.deployer.address, true)).to.emit(s.hook, 'HardModeSkipSet').withArgs(pool.poolId, s.deployer.address, true);
+			expect(await outcome(s, pool, base, 0.6)).to.equal('noBackrun'); // the deployer sends the swap
+			await (await s.hook.setHardModeSkip(pool.poolId, s.deployer.address, false)).wait();
+			expect(await outcome(s, pool, base, 0.6)).to.equal('revert');
+			await (await s.hook.setHardModeSkip(pool.poolId, s.testRouter.target, true)).wait();
+			expect(await outcome(s, pool, base, 0.6)).to.equal('noBackrun');
+		});
+
 		it('with outOfGasDepth 0 an out of gas below the first call frame is not recognised', async () => {
 			const s = await setup();
 			const {pool, base} = await prepare(s, {hard: true, executor: ExecutorMode.BurnGas});

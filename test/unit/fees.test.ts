@@ -31,6 +31,55 @@ for (const dex of DEXES) {
 			expect(await s.mevxRouter.constructCalls()).to.equal(1n); // the backrun was attempted
 		});
 
+		it('a wallet with a zero fee override and backrun skip swaps at zero fee without a backrun (cex-dex)', async () => {
+			const s = await setup();
+			const pool = await createPool(s, 10);
+			await (await s.hook.setFeeOverride(pool.poolId, s.alice.address, 1)).wait();
+			await expect(s.hook.setBackrunSkip(pool.poolId, s.alice.address, true)).to.emit(s.hook, 'BackrunSkipSet').withArgs(pool.poolId, s.alice.address, true);
+			await armArbitrage(s, pool, true);
+			const r = await swap(s, pool, true, {from: s.alice});
+			expect(await swapFee(s, r)).to.deep.equal([0n]);
+			expect(events(s.hook, r, 'ProfitShared').length).to.equal(0);
+			expect(await s.mevxRouter.checkCalls()).to.equal(0n);
+			// other wallets are still backrun
+			const r2 = await swap(s, pool, true, {from: s.bob});
+			expect(events(s.hook, r2, 'ProfitShared').length).to.equal(1);
+			await (await s.hook.setBackrunSkip(pool.poolId, s.alice.address, false)).wait();
+			const r3 = await swap(s, pool, true, {from: s.alice});
+			expect(events(s.hook, r3, 'ProfitShared').length).to.equal(1);
+			expect((await s.hook.poolConfig(pool.poolId)).backrunSkipCount).to.equal(0n);
+		});
+
+		it('a router (pool manager caller) on the backrun skip list skips the backrun of every swap it makes', async () => {
+			const s = await setup();
+			const pool = await createPool(s, 10);
+			await (await s.hook.setBackrunSkip(pool.poolId, s.testRouter.target, true)).wait();
+			await armArbitrage(s, pool, true);
+			const r = await swap(s, pool, true, {from: s.bob});
+			expect(events(s.hook, r, 'ProfitShared').length).to.equal(0);
+			expect(await s.mevxRouter.checkCalls()).to.equal(0n);
+			await (await s.hook.setBackrunSkip(pool.poolId, s.testRouter.target, false)).wait();
+			const r2 = await swap(s, pool, true, {from: s.bob});
+			expect(events(s.hook, r2, 'ProfitShared').length).to.equal(1);
+		});
+
+		it('the skip counters follow the lists: repeated sets do not double count', async () => {
+			const s = await setup();
+			const pool = await createPool(s, 10);
+			for (const account of [s.alice.address, s.alice.address, s.bob.address]) {
+				await (await s.hook.setBackrunSkip(pool.poolId, account, true)).wait();
+				await (await s.hook.setHardModeSkip(pool.poolId, account, true)).wait();
+			}
+			let c = await s.hook.poolConfig(pool.poolId);
+			expect([c.backrunSkipCount, c.hardModeSkipCount]).to.deep.equal([2n, 2n]);
+			await expect(s.hook.setBackrunSkip(pool.poolId, s.carol.address, false)).to.not.emit(s.hook, 'BackrunSkipSet');
+			for (const account of [s.alice.address, s.bob.address]) {
+				await (await s.hook.setBackrunSkip(pool.poolId, account, false)).wait();
+				await (await s.hook.setHardModeSkip(pool.poolId, account, false)).wait();
+			}
+			c = await s.hook.poolConfig(pool.poolId);
+			expect([c.backrunSkipCount, c.hardModeSkipCount]).to.deep.equal([0n, 0n]);
+		});
 
 		it('overrides: tx.origin first, then the pool manager caller; an override of 0 is a zero fee; clearing restores the pool fee', async () => {
 			const s = await setup();

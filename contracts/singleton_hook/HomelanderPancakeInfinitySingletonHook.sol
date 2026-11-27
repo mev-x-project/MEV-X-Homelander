@@ -38,6 +38,8 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 	// granted for one pool as poolRole(role, poolId), or for all pools as the role itself
 	bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
 	bytes32 public constant POOL_ADMIN_ROLE = keccak256("POOL_ADMIN_ROLE");
+	bytes32 public constant BACKRUN_SKIP_ROLE = keccak256("BACKRUN_SKIP_ROLE");
+	bytes32 public constant HARD_MODE_SKIP_ROLE = keccak256("HARD_MODE_SKIP_ROLE");
 
 	struct PoolConfig {
 		bool initialized;
@@ -50,6 +52,8 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 		uint32 callGasBudget;
 		uint8 outOfGasDepth;
 		uint16 overriddenFeeCount;
+		uint16 backrunSkipCount;
+		uint16 hardModeSkipCount;
 	}
 
 	IMevxExecutor public mevxExecutor;
@@ -69,6 +73,10 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 	mapping(bytes32 poolId => PoolKey) internal _poolKeys;
 	// fee + 1, 0 = no override
 	mapping(bytes32 poolId => mapping(address account => uint24 feePlusOne)) public feeOverridePlusOne;
+	// swaps sent by these wallets (tx.origin) or through these contracts (pool manager caller) are not backrun
+	mapping(bytes32 poolId => mapping(address account => bool)) public backrunSkipped;
+	// hard mode never reverts swaps sent by these wallets (tx.origin) or through these contracts (pool manager caller)
+	mapping(bytes32 poolId => mapping(address account => bool)) public hardModeSkipped;
 
 	event ProfitDistributorSet(address oldProfitDistributor, address newProfitDistributor);
 	event MevxExecutorSet(address oldMevxExecutor, address newMevxExecutor);
@@ -78,6 +86,8 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 	event PoolStaticFeeSet(bytes32 indexed poolId, uint24 fee);
 	event PoolDynamicFeeSet(bytes32 indexed poolId, bool enabled, uint24 minFee, uint24 maxFee);
 	event FeeOverrideSet(bytes32 indexed poolId, address indexed account, uint24 feePlusOne);
+	event BackrunSkipSet(bytes32 indexed poolId, address indexed account, bool skipped);
+	event HardModeSkipSet(bytes32 indexed poolId, address indexed account, bool skipped);
 	event PoolLpShareSet(bytes32 indexed poolId, uint16 lpShareBps);
 	event PoolHardModeSet(bytes32 indexed poolId, bool enabled);
 	event PoolCallGasBudgetSet(bytes32 indexed poolId, uint32 callGasBudget);
@@ -263,6 +273,24 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 		emit PoolLpShareSet(poolId, lpShareBps);
 	}
 
+	function setBackrunSkip(bytes32 poolId, address account, bool skipped) external onlyPoolRole(BACKRUN_SKIP_ROLE, poolId) {
+		if (backrunSkipped[poolId][account] == skipped) return;
+		PoolConfig storage c = poolConfig[poolId];
+		if (skipped) c.backrunSkipCount++;
+		else c.backrunSkipCount--;
+		backrunSkipped[poolId][account] = skipped;
+		emit BackrunSkipSet(poolId, account, skipped);
+	}
+
+	function setHardModeSkip(bytes32 poolId, address account, bool skipped) external onlyPoolRole(HARD_MODE_SKIP_ROLE, poolId) {
+		if (hardModeSkipped[poolId][account] == skipped) return;
+		PoolConfig storage c = poolConfig[poolId];
+		if (skipped) c.hardModeSkipCount++;
+		else c.hardModeSkipCount--;
+		hardModeSkipped[poolId][account] = skipped;
+		emit HardModeSkipSet(poolId, account, skipped);
+	}
+
 	function setHardMode(bytes32 poolId, bool enabled) external onlyPoolRole(POOL_ADMIN_ROLE, poolId) {
 		poolConfig[poolId].hardMode = enabled;
 		emit PoolHardModeSet(poolId, enabled);
@@ -348,7 +376,9 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 			lpShareBps: defaultLpShareBps,
 			callGasBudget: budget,
 			outOfGasDepth: defaultOutOfGasDepth,
-			overriddenFeeCount: 0
+			overriddenFeeCount: 0,
+			backrunSkipCount: 0,
+			hardModeSkipCount: 0
 		});
 
 		bytes memory data = abi.encodePacked(
@@ -394,6 +424,8 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 			return (this.afterSwap.selector, 0);
 		}
 
+		if (c.backrunSkipCount != 0 && (backrunSkipped[poolId][tx.origin] || backrunSkipped[poolId][sender])) return (this.afterSwap.selector, 0);
+
 		// a currency the caller synced and has not settled yet would be consumed or reset by the settlements of the
 		// backrun and the donation: it is settled to the hook here and synced again with the same unsettled amount after.
 		// Both run outside runArbitrage, so a failure of the synced token reverts the swap instead of skipping the backrun
@@ -410,7 +442,7 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 			// (an out of gas up to outOfGasDepth calls deep hands back at most (1 + depth)/64)
 			bool shortOfBudget = gasBefore - gasBefore / 64 < c.callGasBudget;
 			bool outOfGas = shortOfBudget && gasAfter * 64 <= gasBefore * (1 + uint256(c.outOfGasDepth));
-			if (c.hardMode && outOfGas) revert("Insufficient gas for afterSwap hook");
+			if (c.hardMode && outOfGas && !_hardModeSkipped(c, poolId, sender)) revert("Insufficient gas for afterSwap hook");
 			emit BackrunFailed(poolId, !success, outOfGas);
 		}
 
@@ -527,6 +559,10 @@ contract HomelanderPancakeInfinitySingletonHook is CLBaseHook, AccessControlDefa
 			IERC20(Currency.unwrap(currency)).safeTransfer(address(vault), amount);
 			require(vault.settle() == amount, "settle mismatch");
 		}
+	}
+
+	function _hardModeSkipped(PoolConfig memory c, bytes32 poolId, address sender) internal view returns (bool) {
+		return c.hardModeSkipCount != 0 && (hardModeSkipped[poolId][tx.origin] || hardModeSkipped[poolId][sender]);
 	}
 
 	function _inBackrun() internal view returns (bool active) {
