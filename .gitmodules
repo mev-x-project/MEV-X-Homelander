@@ -1,0 +1,3 @@
+[submodule "lib/infinity-hooks"]
+	path = lib/infinity-hooks
+	url = https://github.com/pancakeswap/infinity-hooks.git

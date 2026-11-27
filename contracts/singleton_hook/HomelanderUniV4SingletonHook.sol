@@ -6,6 +6,7 @@ import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {TransientStateLibrary} from "@uniswap/v4-core/src/libraries/TransientStateLibrary.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {BeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
@@ -27,14 +28,21 @@ import {ISingletonHookFactory} from "./interfaces/ISingletonHookFactory.sol";
 contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRules {
 	using LPFeeLibrary for uint24;
 	using SafeERC20 for IERC20;
+	using TransientStateLibrary for IPoolManager;
 
 	uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
 	uint256 public constant BPS_DENOMINATOR = 10_000;
 	uint8 public constant MAX_OUT_OF_GAS_DEPTH = 32;
+	// 10%: cap of every LP fee the hook sets (static, per-address and dynamic)
+	uint24 public constant MAX_LP_FEE = 100_000;
+	// bytes32(uint256(keccak256("homelander.singletonHook.backrun")) - 1): set while runArbitrage runs the executor
+	uint256 private constant _BACKRUN_SLOT = 0xe616359ca37d22c995db3bcf994700189c8d1fa1172a1c0593310f2bf012d5c2;
 
 	// granted for one pool as poolRole(role, poolId), or for all pools as the role itself
 	bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
 	bytes32 public constant POOL_ADMIN_ROLE = keccak256("POOL_ADMIN_ROLE");
+	bytes32 public constant BACKRUN_SKIP_ROLE = keccak256("BACKRUN_SKIP_ROLE");
+	bytes32 public constant HARD_MODE_SKIP_ROLE = keccak256("HARD_MODE_SKIP_ROLE");
 
 	struct PoolConfig {
 		bool initialized;
@@ -47,6 +55,8 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		uint32 callGasBudget;
 		uint8 outOfGasDepth;
 		uint16 overriddenFeeCount;
+		uint16 backrunSkipCount;
+		uint16 hardModeSkipCount;
 	}
 
 	struct Parameters {
@@ -76,6 +86,10 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 	mapping(bytes32 poolId => PoolKey) internal _poolKeys;
 	// fee + 1, 0 = no override
 	mapping(bytes32 poolId => mapping(address account => uint24 feePlusOne)) public feeOverridePlusOne;
+	// swaps sent by these wallets (tx.origin) or through these contracts (pool manager caller) are not backrun
+	mapping(bytes32 poolId => mapping(address account => bool)) public backrunSkipped;
+	// hard mode never reverts swaps sent by these wallets (tx.origin) or through these contracts (pool manager caller)
+	mapping(bytes32 poolId => mapping(address account => bool)) public hardModeSkipped;
 
 
 	event ProfitDistributorSet(address oldProfitDistributor, address newProfitDistributor);
@@ -86,18 +100,21 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 	event PoolStaticFeeSet(bytes32 indexed poolId, uint24 fee);
 	event PoolDynamicFeeSet(bytes32 indexed poolId, bool enabled, uint24 minFee, uint24 maxFee);
 	event FeeOverrideSet(bytes32 indexed poolId, address indexed account, uint24 feePlusOne);
+	event BackrunSkipSet(bytes32 indexed poolId, address indexed account, bool skipped);
+	event HardModeSkipSet(bytes32 indexed poolId, address indexed account, bool skipped);
 	event PoolLpShareSet(bytes32 indexed poolId, uint16 lpShareBps);
 	event PoolHardModeSet(bytes32 indexed poolId, bool enabled);
 	event PoolCallGasBudgetSet(bytes32 indexed poolId, uint32 callGasBudget);
 	event PoolOutOfGasDepthSet(bytes32 indexed poolId, uint8 depth);
 	event ProfitShared(bytes32 indexed poolId, address profitToken, uint256 donatedToLps, uint256 sentToDistributor);
+	event BackrunFailed(bytes32 indexed poolId, bool reverted, bool outOfGas);
 
 	constructor() BaseHook(_parameters().poolManager) AccessControlDefaultAdminRules(0, _parameters().owner) {
 		Parameters memory p = _parameters();
 		require(p.mevxRouter != address(0), "mevxRouter is zero address");
 		require(p.mevxExecutor != address(0), "mevxExecutor is zero address");
 		require(p.profitDistributor != address(0), "profitDistributor is zero address");
-		require(p.defaultFee <= LPFeeLibrary.MAX_LP_FEE, "invalid fee");
+		require(p.defaultFee <= MAX_LP_FEE, "invalid fee");
 		require(p.defaultLpShareBps <= BPS_DENOMINATOR, "lp share too high");
 
 		mevxRouter = IMevxRouter(p.mevxRouter);
@@ -106,7 +123,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		defaultFee = p.defaultFee;
 		defaultLpShareBps = p.defaultLpShareBps;
 		defaultCallGasBudget = uint32(MAX_CALL_GAS_BUDGET);
-		defaultDynamicFeeMax = uint24(LPFeeLibrary.MAX_LP_FEE);
+		defaultDynamicFeeMax = MAX_LP_FEE;
 		defaultOutOfGasDepth = 8;
 
 		_setFeeForTickSpacing(1, 100);
@@ -186,7 +203,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		uint24 dynamicFeeMin,
 		uint24 dynamicFeeMax
 	) external onlyRole(DEFAULT_ADMIN_ROLE) {
-		require(fee <= LPFeeLibrary.MAX_LP_FEE, "invalid fee");
+		require(fee <= MAX_LP_FEE, "invalid fee");
 		require(lpShareBps <= BPS_DENOMINATOR, "lp share too high");
 		require(callGasBudget <= MAX_CALL_GAS_BUDGET, "callGasBudget too high");
 		_checkBounds(dynamicFeeMin, dynamicFeeMax);
@@ -209,19 +226,19 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 	}
 
 	function _setFeeForTickSpacing(int24 tickSpacing, uint24 fee) internal {
-		require(fee <= LPFeeLibrary.MAX_LP_FEE, "invalid fee");
+		require(fee <= MAX_LP_FEE, "invalid fee");
 		emit FeeForTickSpacingSet(tickSpacing, feeByTickSpacing[tickSpacing], fee);
 		feeByTickSpacing[tickSpacing] = fee;
 	}
 
 	function _checkBounds(uint24 minFee, uint24 maxFee) private pure {
-		require(minFee <= maxFee && maxFee <= LPFeeLibrary.MAX_LP_FEE, "invalid bounds");
+		require(minFee <= maxFee && maxFee <= MAX_LP_FEE, "invalid bounds");
 	}
 
 	// ──────────────────── Fee manager ────────────────────
 
 	function setPoolFee(bytes32 poolId, uint24 fee) external onlyPoolRole(FEE_MANAGER_ROLE, poolId) {
-		require(fee <= LPFeeLibrary.MAX_LP_FEE, "invalid fee");
+		require(fee <= MAX_LP_FEE, "invalid fee");
 		poolConfig[poolId].staticFee = fee;
 		emit PoolStaticFeeSet(poolId, fee);
 	}
@@ -241,7 +258,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 	}
 
 	function setFeeOverride(bytes32 poolId, address account, uint24 feePlusOne) external onlyPoolRole(FEE_MANAGER_ROLE, poolId) {
-		require(feePlusOne <= LPFeeLibrary.MAX_LP_FEE + 1, "invalid fee");
+		require(feePlusOne <= MAX_LP_FEE + 1, "invalid fee");
 		PoolConfig storage c = poolConfig[poolId];
 		uint24 old = feeOverridePlusOne[poolId][account];
 		if (old == 0 && feePlusOne != 0) c.overriddenFeeCount++;
@@ -256,6 +273,24 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		require(lpShareBps <= BPS_DENOMINATOR, "lp share too high");
 		poolConfig[poolId].lpShareBps = lpShareBps;
 		emit PoolLpShareSet(poolId, lpShareBps);
+	}
+
+	function setBackrunSkip(bytes32 poolId, address account, bool skipped) external onlyPoolRole(BACKRUN_SKIP_ROLE, poolId) {
+		if (backrunSkipped[poolId][account] == skipped) return;
+		PoolConfig storage c = poolConfig[poolId];
+		if (skipped) c.backrunSkipCount++;
+		else c.backrunSkipCount--;
+		backrunSkipped[poolId][account] = skipped;
+		emit BackrunSkipSet(poolId, account, skipped);
+	}
+
+	function setHardModeSkip(bytes32 poolId, address account, bool skipped) external onlyPoolRole(HARD_MODE_SKIP_ROLE, poolId) {
+		if (hardModeSkipped[poolId][account] == skipped) return;
+		PoolConfig storage c = poolConfig[poolId];
+		if (skipped) c.hardModeSkipCount++;
+		else c.hardModeSkipCount--;
+		hardModeSkipped[poolId][account] = skipped;
+		emit HardModeSkipSet(poolId, account, skipped);
 	}
 
 	function setHardMode(bytes32 poolId, bool enabled) external onlyPoolRole(POOL_ADMIN_ROLE, poolId) {
@@ -292,7 +327,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		bool zeroForOne,
 		int256 amountSpecified
 	) public view returns (uint24) {
-		if (sender == address(mevxExecutor)) return 0;
+		if (sender == address(mevxExecutor) && _inBackrun()) return 0;
 		PoolConfig memory c = poolConfig[poolId];
 
 		if (c.overriddenFeeCount != 0) {
@@ -342,7 +377,9 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 			lpShareBps: defaultLpShareBps,
 			callGasBudget: budget,
 			outOfGasDepth: defaultOutOfGasDepth,
-			overriddenFeeCount: 0
+			overriddenFeeCount: 0,
+			backrunSkipCount: 0,
+			hardModeSkipCount: 0
 		});
 
 		bytes memory data = abi.encodePacked(
@@ -379,26 +416,33 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		bytes32 poolId = PoolId.unwrap(key.toId());
 		PoolConfig memory c = poolConfig[poolId];
 
-		if (sender == address(mevxExecutor)) {
+		if (sender == address(mevxExecutor) && _inBackrun()) {
 			address(mevxRouter).call{gas: c.callGasBudget}(
 				abi.encodeCall(IMevxRouter.initialArbCheck, (poolId, !params.zeroForOne))
 			);
 			return (BaseHook.afterSwap.selector, 0);
 		}
 
+		if (c.backrunSkipCount != 0 && (backrunSkipped[poolId][tx.origin] || backrunSkipped[poolId][sender])) return (BaseHook.afterSwap.selector, 0);
+
+		// a currency the caller synced and has not settled yet would be consumed or reset by the settlements of the
+		// backrun and the donation: it is settled to the hook here and synced again with the same unsettled amount after.
+		// Both run outside runArbitrage, so a failure of the synced token reverts the swap instead of skipping the backrun
+		(Currency synced, uint256 syncedPaid) = _settleCallerSync();
 		uint256 gasBefore = gasleft();
 		(bool success, bytes memory ret) = address(this).call{gas: c.callGasBudget}(
 			abi.encodeCall(this.runArbitrage, (poolId, params.zeroForOne, -delta.amount0(), -delta.amount1(), sender))
 		);
 		uint256 gasAfter = gasleft();
+		_resyncCallerSync(synced, syncedPaid);
 
-		// hard mode: the arbitrage failed, the swap left it less than its budget and it burned its gas
-		// (an out of gas up to outOfGasDepth calls deep hands back at most (1 + depth)/64)
-		if (c.hardMode && (!success || abi.decode(ret, (bool)))) {
+		if (!success || abi.decode(ret, (bool))) {
+			// the swap left the arbitrage less than its budget and it burned its gas
+			// (an out of gas up to outOfGasDepth calls deep hands back at most (1 + depth)/64)
 			bool shortOfBudget = gasBefore - gasBefore / 64 < c.callGasBudget;
-			if (shortOfBudget && gasAfter * 64 <= gasBefore * (1 + uint256(c.outOfGasDepth))) {
-				revert("Insufficient gas for afterSwap hook");
-			}
+			bool outOfGas = shortOfBudget && gasAfter * 64 <= gasBefore * (1 + uint256(c.outOfGasDepth));
+			if (c.hardMode && outOfGas && !_hardModeSkipped(c, poolId, sender)) revert("Insufficient gas for afterSwap hook");
+			emit BackrunFailed(poolId, !success, outOfGas);
 		}
 
 		return (BaseHook.afterSwap.selector, 0);
@@ -441,12 +485,15 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		if (!isArbPossible) return false;
 
 		uint256 balanceBefore = _selfBalance(profitToken);
+		_setBackrun(true);
 		try IMevxExecutorWithStatus(address(mevxExecutor)).executeRouteWithStatus(encodedRoute, pools, amountIn, profitToken, address(this)) returns (
 			bool executed,
 			uint8
 		) {
+			_setBackrun(false);
 			if (!executed) return true;
 		} catch {
+			_setBackrun(false);
 			return true;
 		}
 
@@ -469,6 +516,19 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		}
 
 		emit ProfitShared(poolId, profitToken, donated, rest);
+	}
+
+	function _settleCallerSync() private returns (Currency currency, uint256 paid) {
+		currency = poolManager.getSyncedCurrency();
+		if (currency.isAddressZero()) return (currency, 0);
+		if (currency.balanceOf(address(poolManager)) > poolManager.getSyncedReserves()) paid = poolManager.settle();
+	}
+
+	function _resyncCallerSync(Currency currency, uint256 paid) private {
+		if (currency.isAddressZero()) return;
+		if (paid != 0) poolManager.take(currency, address(this), paid);
+		poolManager.sync(currency);
+		if (paid != 0) IERC20(Currency.unwrap(currency)).safeTransfer(address(poolManager), paid);
 	}
 
 	function _donateToPool(bytes32 poolId, address profitToken, uint256 amount) internal returns (uint256) {
@@ -496,6 +556,22 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 			poolManager.sync(currency);
 			IERC20(Currency.unwrap(currency)).safeTransfer(address(poolManager), amount);
 			require(poolManager.settle() == amount, "settle mismatch");
+		}
+	}
+
+	function _hardModeSkipped(PoolConfig memory c, bytes32 poolId, address sender) internal view returns (bool) {
+		return c.hardModeSkipCount != 0 && (hardModeSkipped[poolId][tx.origin] || hardModeSkipped[poolId][sender]);
+	}
+
+	function _inBackrun() internal view returns (bool active) {
+		assembly {
+			active := tload(_BACKRUN_SLOT)
+		}
+	}
+
+	function _setBackrun(bool active) private {
+		assembly {
+			tstore(_BACKRUN_SLOT, active)
 		}
 	}
 
