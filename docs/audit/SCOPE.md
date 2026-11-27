@@ -77,7 +77,7 @@ BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork against the live 
 
    Every LP fee the hook can return is capped at 10% (`MAX_LP_FEE = 100_000`). The cap applies to the static fee, the fee per tick spacing, the default fee, per-address overrides and the dynamic fee bounds (default 0–10%). Each setter, and the constructor for the default fee, rejects higher values, and the dynamic fee is clamped to bounds that cannot exceed the cap.
 4. **`afterSwap` for the executor's swap inside this hook's backrun** (sender is the executor and the backrun flag is set). The hook calls `router.initialArbCheck(poolId, !zeroForOne)` with `callGasBudget` gas, so the router can cache the new price, and returns. No nested backrun runs.
-5. **`afterSwap` for any other swap.** The hook calls `this.runArbitrage(...)` with `callGasBudget` gas. Inside the call:
+5. **`afterSwap` for any other swap.** If the transaction's sender (`tx.origin`) or the pool manager caller (e.g. an aggregator router) is on the pool's backrun skip list (`setBackrunSkip`, `BACKRUN_SKIP_ROLE`), the hook returns without a backrun. The list is read only when the pool has entries on it (`backrunSkipCount != 0`). Otherwise it calls `this.runArbitrage(...)` with `callGasBudget` gas. Inside the call:
    1. `router.initialArbCheck`. If there is no arbitrage, the hook stops.
    2. `router.constructArbitrageRoute(poolId, zeroForOne, arbData, -delta.amount0, -delta.amount1)`. If it reports no route, the hook stops.
    3. `executor.executeRouteWithStatus(route, pools, amountIn, profitToken, hook)` inside try/catch.
@@ -92,6 +92,8 @@ BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork against the live 
    - the gas available to it was less than `callGasBudget`, so the transaction did not provide enough gas;
    - the call returned at most `(1 + outOfGasDepth)/64` of the gas, so it ran out of gas rather than failing.
 
+   Hard mode never reverts a swap whose `tx.origin` or pool manager caller is on the pool's hard mode skip list (`setHardModeSkip`, `HARD_MODE_SKIP_ROLE`). The list is read only when the pool has entries on it (`hardModeSkipCount != 0`).
+
    `outOfGasDepth` (default 8) covers an out of gas that happens several call frames below the hook. If the transaction provided the full budget, hard mode never reverts the swap.
 
 ## Roles
@@ -103,13 +105,15 @@ The hooks use OpenZeppelin `AccessControlDefaultAdminRules` with a transfer dela
 | `DEFAULT_ADMIN_ROLE` | single account, two-step transfer | set router, executor and distributor; defaults; fee per tick spacing; default out-of-gas depth; everything below |
 | `FEE_MANAGER_ROLE` | globally, or for one pool as `poolRole(role, poolId)` | static fee, dynamic fee on/off and bounds, fee overrides |
 | `POOL_ADMIN_ROLE` | globally, or for one pool | LP share, hard mode, call gas budget, out-of-gas depth |
+| `BACKRUN_SKIP_ROLE` | globally, or for one pool | backrun skip list: wallets (`tx.origin`) and routers (pool manager caller) whose swaps are not backrun |
+| `HARD_MODE_SKIP_ROLE` | globally, or for one pool | hard mode skip list: wallets (`tx.origin`) and routers (pool manager caller) whose swaps hard mode never reverts |
 
 `SingletonHookFactory` is `Ownable2Step`. Only the owner deploys, and ownership cannot be renounced. The hook reads its parameters from `factory.parameters()` in its constructor, so its address depends only on the factory, the salt and the creation code. The factory deletes the parameters after the deployment.
 
 ## External calls and trust assumptions
 
 - **Router, executor and distributor are trusted.** They are set by the admin. They are called with a gas cap, and their failures are swallowed. A misbehaving router can still waste up to `callGasBudget` of the swapper's gas per call, and in hard mode it can make swaps revert when the transaction is short of the budget.
-- **The executor's zero fee is limited to the hook's own backrun.** Swaps the executor makes during `runArbitrage` pay no LP fee and do not start a nested backrun; any other swap through the executor is treated as a regular swap. MEV-X's own off-backrun flows (e.g. CEX-DEX rebalancing) get a zero fee through per-address fee overrides on their wallets. An AMM-level protocol fee still applies. On PancakeSwap Infinity on Base, for example, the executor's swap event shows `fee == protocolFee`.
+- **The executor's zero fee is limited to the hook's own backrun.** Swaps the executor makes during `runArbitrage` pay no LP fee and do not start a nested backrun; any other swap through the executor is treated as a regular swap. MEV-X's own off-backrun flows (e.g. CEX-DEX rebalancing) get a zero fee through per-address fee overrides on their wallets and skip the backrun through the backrun skip list (`BACKRUN_SKIP_ROLE`). An AMM-level protocol fee still applies. On PancakeSwap Infinity on Base, for example, the executor's swap event shows `fee == protocolFee`.
 - **Profit is measured as the hook's balance increase** during `executeRouteWithStatus`. Tokens or native currency sent to the hook outside a backrun stay in the hook, which has no sweep function. `receive()` is open because native profit and native donations pass through the hook.
 - **`getDynamicFee` is optional.** The live MEV-X Router does not implement it, so pools that enable the dynamic fee keep paying the static fee. The call is a `staticcall`, so it cannot change state.
 - **`distributeProfit` failures are swallowed.** The tokens have already been transferred to the distributor at that point.
