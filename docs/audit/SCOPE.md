@@ -70,12 +70,12 @@ BASE_FORK_RPC=<archive RPC> yarn test:fork # Base mainnet fork against the live 
 1. **`beforeInitialize`.** Only dynamic-fee pools are accepted (`fee == 0x800000`). Pool creation is permissionless.
 2. **`afterInitialize`.** The hook stores the pool key and creates the pool config from the defaults. The static fee comes from `feeByTickSpacing`, or the default fee. The hook then calls `router.initializePoolExternally(poolId, poolType, packedKey)` with `callGasBudget` gas and ignores the result.
 3. **`beforeSwap`.** The hook returns `getFee(...) | OVERRIDE_FEE_FLAG`. `getFee` is checked in this order:
-   1. The executor pays 0.
+   1. The executor pays 0, but only while this hook's own backrun is running (a transient flag set by `runArbitrage` around `executeRouteWithStatus`). Outside it, a swap made by the executor pays like any other.
    2. A per-pool override for `tx.origin`, then one for the pool manager caller. Overrides are stored as `fee + 1`, and 0 means no override.
    3. If the pool enabled it, a dynamic fee from `router.getDynamicFee`. This is a `staticcall` with `callGasBudget` gas. The result is clamped to the pool's bounds, and any failure falls back to the static fee.
    4. The pool's static fee.
-4. **`afterSwap` when the caller is the executor** (its own backrun swap). The hook calls `router.initialArbCheck(poolId, !zeroForOne)` with `callGasBudget` gas, so the router can cache the new price, and returns. No nested backrun runs.
-5. **`afterSwap` for any other caller.** The hook calls `this.runArbitrage(...)` with `callGasBudget` gas. Inside the call:
+4. **`afterSwap` for the executor's swap inside this hook's backrun** (sender is the executor and the backrun flag is set). The hook calls `router.initialArbCheck(poolId, !zeroForOne)` with `callGasBudget` gas, so the router can cache the new price, and returns. No nested backrun runs.
+5. **`afterSwap` for any other swap.** The hook calls `this.runArbitrage(...)` with `callGasBudget` gas. Inside the call:
    1. `router.initialArbCheck`. If there is no arbitrage, the hook stops.
    2. `router.constructArbitrageRoute(poolId, zeroForOne, arbData, -delta.amount0, -delta.amount1)`. If it reports no route, the hook stops.
    3. `executor.executeRouteWithStatus(route, pools, amountIn, profitToken, hook)` inside try/catch.
@@ -107,7 +107,7 @@ The hooks use OpenZeppelin `AccessControlDefaultAdminRules` with a transfer dela
 ## External calls and trust assumptions
 
 - **Router, executor and distributor are trusted.** They are set by the admin. They are called with a gas cap, and their failures are swallowed. A misbehaving router can still waste up to `callGasBudget` of the swapper's gas per call, and in hard mode it can make swaps revert when the transaction is short of the budget.
-- **The executor is trusted with the pool's zero fee.** Its swaps on the pool pay no LP fee and never trigger a backrun. An AMM-level protocol fee still applies. On PancakeSwap Infinity on Base, for example, the executor's swap event shows `fee == protocolFee`.
+- **The executor's zero fee is limited to the hook's own backrun.** Swaps the executor makes during `runArbitrage` pay no LP fee and do not start a nested backrun; any other swap through the executor is treated as a regular swap. MEV-X's own off-backrun flows (e.g. CEX-DEX rebalancing) get a zero fee through per-address fee overrides on their wallets. An AMM-level protocol fee still applies. On PancakeSwap Infinity on Base, for example, the executor's swap event shows `fee == protocolFee`.
 - **Profit is measured as the hook's balance increase** during `executeRouteWithStatus`. Tokens or native currency sent to the hook outside a backrun stay in the hook, which has no sweep function. `receive()` is open because native profit and native donations pass through the hook.
 - **`getDynamicFee` is optional.** The live MEV-X Router does not implement it, so pools that enable the dynamic fee keep paying the static fee. The call is a `staticcall`, so it cannot change state.
 - **`distributeProfit` failures are swallowed.** The tokens have already been transferred to the distributor at that point.

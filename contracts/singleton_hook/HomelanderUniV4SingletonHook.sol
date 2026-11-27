@@ -31,6 +31,8 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 	uint256 public constant MAX_CALL_GAS_BUDGET = 5_000_000;
 	uint256 public constant BPS_DENOMINATOR = 10_000;
 	uint8 public constant MAX_OUT_OF_GAS_DEPTH = 32;
+	// bytes32(uint256(keccak256("homelander.singletonHook.backrun")) - 1): set while runArbitrage runs the executor
+	uint256 private constant _BACKRUN_SLOT = 0xe616359ca37d22c995db3bcf994700189c8d1fa1172a1c0593310f2bf012d5c2;
 
 	// granted for one pool as poolRole(role, poolId), or for all pools as the role itself
 	bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
@@ -293,7 +295,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		bool zeroForOne,
 		int256 amountSpecified
 	) public view returns (uint24) {
-		if (sender == address(mevxExecutor)) return 0;
+		if (sender == address(mevxExecutor) && _inBackrun()) return 0;
 		PoolConfig memory c = poolConfig[poolId];
 
 		if (c.overriddenFeeCount != 0) {
@@ -380,7 +382,7 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		bytes32 poolId = PoolId.unwrap(key.toId());
 		PoolConfig memory c = poolConfig[poolId];
 
-		if (sender == address(mevxExecutor)) {
+		if (sender == address(mevxExecutor) && _inBackrun()) {
 			address(mevxRouter).call{gas: c.callGasBudget}(
 				abi.encodeCall(IMevxRouter.initialArbCheck, (poolId, !params.zeroForOne))
 			);
@@ -442,12 +444,15 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 		if (!isArbPossible) return false;
 
 		uint256 balanceBefore = _selfBalance(profitToken);
+		_setBackrun(true);
 		try IMevxExecutorWithStatus(address(mevxExecutor)).executeRouteWithStatus(encodedRoute, pools, amountIn, profitToken, address(this)) returns (
 			bool executed,
 			uint8
 		) {
+			_setBackrun(false);
 			if (!executed) return true;
 		} catch {
+			_setBackrun(false);
 			return true;
 		}
 
@@ -497,6 +502,18 @@ contract HomelanderUniV4SingletonHook is BaseHook, AccessControlDefaultAdminRule
 			poolManager.sync(currency);
 			IERC20(Currency.unwrap(currency)).safeTransfer(address(poolManager), amount);
 			require(poolManager.settle() == amount, "settle mismatch");
+		}
+	}
+
+	function _inBackrun() internal view returns (bool active) {
+		assembly {
+			active := tload(_BACKRUN_SLOT)
+		}
+	}
+
+	function _setBackrun(bool active) private {
+		assembly {
+			tstore(_BACKRUN_SLOT, active)
 		}
 	}
 
