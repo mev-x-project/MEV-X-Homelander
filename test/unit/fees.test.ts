@@ -2,7 +2,7 @@ import {ethers} from 'hardhat';
 import {expect} from 'chai';
 import {loadFixture} from '@nomicfoundation/hardhat-network-helpers';
 import {DEXES} from '../shared/dexes';
-import {FeeMode, createPool, events, fixtureFor, swap} from '../shared/stack';
+import {FeeMode, armArbitrage, createPool, events, fixtureFor, swap} from '../shared/stack';
 
 const ZERO = ethers.ZeroAddress;
 
@@ -11,23 +11,26 @@ for (const dex of DEXES) {
 		const setup = () => loadFixture(fixtureFor(dex));
 		const swapFee = async (s: any, r: any) => events(s.manager, r, 'Swap').map((e) => e.args.fee as bigint);
 
-		it('users pay the pool static fee, the executor zero', async () => {
+		it('users pay the pool static fee; outside the hook backrun the executor pays it too', async () => {
 			const s = await setup();
 			const pool = await createPool(s, 10);
 			expect(await swapFee(s, await swap(s, pool, true))).to.deep.equal([500n]);
 			await expect(s.hook.setPoolFee(pool.poolId, 1234)).to.emit(s.hook, 'PoolStaticFeeSet').withArgs(pool.poolId, 1234);
 			expect(await swapFee(s, await swap(s, pool, false))).to.deep.equal([1234n]);
-			expect(await s.hook.getFee(pool.poolId, s.executor.target, s.alice.address, true, -1)).to.equal(0n);
+			expect(await s.hook.getFee(pool.poolId, s.executor.target, s.alice.address, true, -1)).to.equal(1234n);
 		});
 
-		it('the executor pays zero even with an override or a dynamic fee for its address', async () => {
+		it('a swap made through the executor outside the hook backrun pays the pool fee and is backrun', async () => {
 			const s = await setup();
 			const pool = await createPool(s, 10);
-			await (await s.hook.setFeeOverride(pool.poolId, s.executor.target, 5001)).wait();
-			await (await s.mevxRouter.setDynamicFee(FeeMode.Fixed, 9000)).wait();
-			await (await s.hook.setDynamicFeeEnabled(pool.poolId, true)).wait();
-			expect(await s.hook.getFee(pool.poolId, s.executor.target, s.executor.target, true, -1)).to.equal(0n);
+			// the test router plays the executor: every swap it makes has sender == mevxExecutor, but no hook backrun is running
+			await (await s.hook.setMevxExecutor(s.testRouter.target)).wait();
+			await armArbitrage(s, pool, true);
+			const r = await swap(s, pool, true);
+			expect(await swapFee(s, r)).to.deep.equal([500n]);
+			expect(await s.mevxRouter.constructCalls()).to.equal(1n); // the backrun was attempted
 		});
+
 
 		it('overrides: tx.origin first, then the pool manager caller; an override of 0 is a zero fee; clearing restores the pool fee', async () => {
 			const s = await setup();
